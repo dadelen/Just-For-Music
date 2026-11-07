@@ -43,6 +43,12 @@ final class LyricsLanguageDetectorTests: XCTestCase {
         XCTAssertNil(corrupted)
     }
 
+    func testAlbumChangeSeparatesTrackIdentity() {
+        let first = TrackInfo(title: "Same song", artist: "Same artist", album: "Studio", duration: 120, position: 0, state: .paused)
+        let second = TrackInfo(title: "Same song", artist: "Same artist", album: "Live", duration: 120, position: 0, state: .paused)
+        XCTAssertNotEqual(first.identityKey, second.identityKey)
+    }
+
     func testCacheKeyChangesWithLyricsAndTranslationStrategy() {
         let track = TrackInfo(title: "Synthetic", artist: "Test", album: "Album", duration: 30, position: 0, state: .paused)
         let first = document(["The sunlight warms the empty room"])

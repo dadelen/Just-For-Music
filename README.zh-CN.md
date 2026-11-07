@@ -1,269 +1,94 @@
-# Apple Music Lyrics
+# Apple Music Lyrics · V2
 
-[English](README.md) | [简体中文](README.zh-CN.md)
+[English](README.md) | 简体中文
 
-一款非官方的 macOS 菜单栏应用，用于显示 Music.app 当前歌曲的同步歌词。
-应用只读取 Apple Music 已有的本地缓存，不会请求第三方歌词服务。
+基于 [Takpap/apple-music-lyrics](https://github.com/Takpap/apple-music-lyrics) 的二次开发版本。
+感谢原作者和贡献者；保留原项目 MIT License 和版权声明。本项目与 Apple 无隶属关系。
 
-## 演示
-
-https://github.com/user-attachments/assets/0540ded7-f40e-46ad-a44f-2382c24b169a
-
-> [!IMPORTANT]
-> 本项目依赖 Music.app 的私有缓存格式，macOS 更新后可能失效。如果不替换
-> 数据来源，它不适合直接提交到 Mac App Store。
+原有 Apple Music 缓存读取、TTML 解析和播放监测继续复用。此次改造围绕状态栏、系统玻璃浮窗、黑胶和本地翻译展开。
 
 ## 功能
 
-- 原生 AppKit 菜单栏应用，不显示 Dock 图标
-- 使用 Apple Music TTML 实现词级卡拉 OK 高亮
-- 在播放位置采样之间，以 60 fps 平滑更新状态栏歌词
-- 根据 MacBook 和刘海屏自动调整状态栏宽度
-- 长歌词在状态项内部滚动，不会持续挤占其他菜单栏图标
-- 始终置顶的浮动歌词面板，支持歌词换行动画
-- 浮窗支持沉浸和紧凑桌面两种显示模式
-- 悬停控制条支持锁定、鼠标穿透，以及按住 `Option` 临时交互
-- 点击相邻歌词可跳转播放，并可按数据可用性显示翻译和音译
-- 可手动滚动浏览歌词，停止后按行吸附，并自动恢复播放跟随
-- 按显示器记忆窗口位置，可配置空间策略，并适配 macOS 26 Liquid Glass
-- 全局快捷键：`Control-Option-L` 显示/隐藏，`Control-Option-K` 锁定/解锁
-- 在状态项菜单中预览当前歌词附近的内容
-- 将当前歌词导出为 LRC（逐行/逐字）、SRT 或纯文本，可选包含翻译和音译
-- 通过 GitHub Releases 每日自动检查更新，也可从菜单手动检查
-- 切换歌曲后自动重新扫描歌词缓存
-- 无第三方依赖、无数据分析、不会提取账户令牌，也不会主动请求歌词
+- 一个状态项容纳原文逐字歌词，以及独立的上一首、播放/暂停、下一首按钮。
+- 长歌词在完整或紧凑视口内按演唱位置滚动，按钮位置固定。提供自动、完整、紧凑和仅图标设置。
+- 点击歌词打开简洁播放器：真实封面、歌曲信息、播放控制和进度条；底部仅设置、退出。
+- 独立设置窗口包含常规、歌词、翻译、悬浮窗口、更新与诊断五组。
+- 桌面浮窗使用系统玻璃，没有蓝色或其他自定义底色。左侧黑胶和白色唱针，右侧原文、译文及可选缓存音译。
+- Small（640 × 260 pt）和 Large（880 × 380 pt）两档，不支持边缘自由缩放。窗口可拖动、置顶、记忆显示器位置，并可跨桌面及全屏显示。
+- 黑胶与真实封面同容器按 33⅓ RPM 旋转，暂停保留角度；唱针独立移动。隐藏窗口及系统减少动态效果时停止装饰旋转。
+- 前奏及有可靠边界的间奏/尾奏显示三点进度，随真实播放位置高亮。低于 1.5 秒或没有可靠结束时间的空档不生成进度。
+- 浮窗保留逐字高亮、手动滚动和点击歌词跳转，译文字号为原文的 80%。
+- 本地识别歌词语言，优先缓存中文译文，再使用 Apple Translation。中文不翻译，**同一句中外文混合时整句不翻译**；同首歌其他纯外语行仍可翻译。
+- 翻译按歌曲、源/目标语言、歌词版本及质量策略缓存，切歌隔离旧任务。翻译结果只出现在浮窗。
+- 更新源可配置为自己的 GitHub Releases，保留下载与 SHA-256 校验。未配置时关闭更新检查。
 
-Apple Music 提供带时间信息的 `<span>` 元素，一个 span 可能包含一个或多个
-字符。当 span 包含多个字符时，应用会在其时间范围内插值显示高亮进度；Apple
-不一定为每个字符单独提供时间戳。
+已删除歌词导出、沉浸/紧凑双浮窗布局、窗口锁定、鼠标穿透、Option 临时交互、全局快捷键以及任意缩放。
 
-## 工作原理
+## 兼容性
 
-```text
-Music.app --AppleScript--> 歌曲信息和播放位置
-    |
-    +--本地 CFNetwork 缓存--> Apple Catalog JSON + 词级 TTML
-                                      |
-                                      v
-                              状态栏和浮动歌词
-```
+| 项目 | 条件 |
+| --- | --- |
+| CPU | 仅 Apple Silicon / arm64 |
+| 最低运行系统 | macOS 13 |
+| 玻璃 | macOS 26+：NSGlassEffectView；13–25：NSVisualEffectView |
+| 机器翻译 | macOS 15+；13–14 仅显示已有缓存译文 |
+| 翻译质量策略 | macOS 26.4+ 优先 highFidelity；更早系统使用系统可用策略 |
+| 从源码构建 | Xcode 26.4+、macOS SDK 26.4+，Swift 6.3+ |
 
-应用会读取以下缓存位置：
+系统降低透明度时使用不透明系统背景；减少动态效果时停用黑胶旋转，保留歌词同步。
+高质量策略的可用性和回退由 [Apple Translation](https://developer.apple.com/documentation/translation/translationsession/strategy) 决定。
+
+菜单栏剩余空间没有可精确查询的公共接口。自动模式按屏幕条件选择宽度；状态项仍可能被系统隐藏。可手动改为紧凑或仅图标，重新打开应用可进入设置。
+
+## 歌词来源与限制
+
+应用只读以下 Music.app 缓存，不向第三方歌词或翻译 API 发送歌词：
 
 ```text
 ~/Library/Caches/com.apple.Music/Cache.db
 ~/Library/Caches/com.apple.Music/fsCachedData/
 ```
 
-缓存响应通过歌曲名、歌手、专辑和时长进行匹配。缓存数据库始终以只读方式打开。
-如果数据库结构无法识别，应用会降级扫描最近的缓存文件。
+在 Music.app 播放 Apple Music 歌曲，并打开其歌词面板，让系统先缓存歌词。缓存按歌曲信息匹配；没有对应缓存时，应用会提示等待。导入的本地音乐、无歌词歌曲以及系统已清理的缓存不保证可用。该缓存格式由 Apple 私有实现控制，系统升级可能影响读取。
 
-## 兼容性
+逐字精度取决于 TTML：多个字符共用一个 span 时，在该 span 时间范围内插值，不声称每个字符都有独立时间戳。语言识别对短句或模糊混合语言采用保守策略，可能跳过部分外语行。
 
-- 搭载 Apple 芯片并运行 macOS 13 或更高版本的 Mac
-- Music.app
-- Music.app 已缓存歌词响应的 Apple Music Catalog 歌曲
-
-不保证任意导入的本地音乐文件都能使用。只有当 Music.app 同时缓存了与本地歌曲
-匹配的 Apple Catalog `syllable-lyrics` 响应时，才可能显示歌词。macOS 也可能
-随时清理这些缓存。
-
-从源码构建还需要 Swift 5.9 或 Xcode 15 及更高版本。
-
-## 构建和运行
-
-直接运行 Swift Package：
-
-```bash
-./scripts/run.sh
-```
-
-创建本地签名的应用包：
-
-```bash
-./scripts/package-app.sh
-open "dist/Apple Music Lyrics.app"
-```
-
-将生成的应用安装到当前电脑：
-
-```bash
-ditto "dist/Apple Music Lyrics.app" "/Applications/Apple Music Lyrics.app"
-```
-
-### 无法打开下载的应用
-
-发布版本使用 ad-hoc 签名且尚未经过 Apple 公证，因此从浏览器下载后，macOS
-可能提示应用“无法验证”或“已损坏”。请先确认应用来自本项目的官方 GitHub
-Release，然后按以下步骤操作：
-
-1. 尝试打开一次 `Apple Music Lyrics.app`，并关闭系统弹出的警告。
-2. 打开“**系统设置 > 隐私与安全性**”。
-3. 向下滚动到“安全性”，找到 `Apple Music Lyrics.app` 已被阻止的提示。
-4. 点击“**仍要打开**”，然后在确认窗口中选择“打开”。macOS 可能要求使用
-   Touch ID 或输入管理员密码。
-
-![在隐私与安全性中允许打开 Apple Music Lyrics](static/gatekeeper-open-anyway.png)
-
-完成后应用应能正常启动。重新下载或更新应用后，可能需要再次执行上述操作。
-
-如果没有出现“仍要打开”，或应用仍然无法启动，可以在终端中移除下载隔离属性
-并重新打开：
-
-```bash
-xattr -dr com.apple.quarantine "/Applications/Apple Music Lyrics.app"
-open "/Applications/Apple Music Lyrics.app"
-```
-
-如果仍然无法打开，可以清除应用包的全部扩展属性：
-
-```bash
-xattr -cr "/Applications/Apple Music Lyrics.app"
-```
-
-也可以在 Finder 中右键应用并选择“打开”。不要对来源不明的应用执行上述终端
-命令。
-
-## 自动发布
-
-推送符合语义化版本格式的 Tag 后，GitHub Actions 会自动执行发布工作流：
-
-```bash
-git tag -a v1.0.0 -m "Release v1.0.0"
-git push origin v1.0.0
-```
-
-工作流会运行测试，构建 Apple 芯片专用（`arm64`）应用，并将
-以下文件上传到 GitHub Release：
-
-- `Apple-Music-Lyrics-<version>-macos-arm64.zip`
-- `Apple-Music-Lyrics-<version>-macos-arm64.dmg`
-- `SHA256SUMS.txt`
-
-除非向打包脚本提供 `CODESIGN_IDENTITY`，发布版本默认使用 ad-hoc 签名。
-ad-hoc 签名不能替代 Developer ID 签名和 Apple 公证，因此下载的应用仍可能显示
-Gatekeeper 警告。
-
-## 权限
-
-首次启动时，请在以下位置允许 Apple Music Lyrics 控制 **Music**：
-
-```text
-系统设置 > 隐私与安全性 > 自动化
-```
-
-应用通过 macOS 的进程 API 判断 Music.app 是否正在运行，不需要控制
-**System Events**。应用也不需要“完全磁盘访问”权限，不会读取 Apple 账户凭据。
-
-### 播放歌曲时显示 Error
-
-首次读取当前歌曲时，macOS 会询问是否允许 Apple Music Lyrics 控制 Music，
-请选择“允许”。如果没有出现授权提示，或播放歌曲后仍显示 Error，请检查：
-
-```text
-系统设置 > 隐私与安全性 > 自动化 > Apple Music Lyrics > Music
-```
-
-如果“自动化”列表中没有 Apple Music Lyrics，请退出应用，在终端执行以下命令，
-然后在重新出现的系统授权窗口中选择“允许”：
-
-```bash
-tccutil reset AppleEvents local.applemusiclyrics
-open "/Applications/Apple Music Lyrics.app"
-```
-
-使用 ad-hoc 签名的应用在重新安装或升级后，可能需要重新授权。
-
-## 菜单操作
-
-| 操作 | 说明 |
-| --- | --- |
-| Show / Hide Floating Lyrics | 显示或隐藏浮动歌词面板（全局 `Control-Option-L`） |
-| Lock / Unlock Floating Lyrics | 禁止移动和缩放浮窗（全局 `Control-Option-K`） |
-| Click Through Floating Lyrics | 让鼠标操作穿透到下层应用；按住 `Option` 可临时操作浮窗 |
-| Refresh Lyrics | 重新扫描 Music.app 的本地歌词缓存 |
-| 导出歌词 | 将当前歌词保存为 LRC（逐行/逐字）、SRT 或 TXT，或拷贝到剪贴板；可选包含翻译和音译 |
-| Diagnostic Log | 查看、复制诊断日志，或在 Finder 中显示日志文件 |
-| Quit Apple Music Lyrics | 退出应用 |
-
-浮动面板的位置、尺寸和显示状态会在下次启动时恢复。
-
-## 诊断日志
-
-应用会在本地记录歌词缓存读取和解析过程：
-
-```text
-~/Library/Logs/Apple Music Lyrics/diagnostic.log
-```
-
-当日志达到 512 KB 时，旧内容会轮转到 `diagnostic.previous.log`。日志包含应用与
-macOS 版本、缓存候选数量、解析结果、当前歌曲名和歌手等排查信息，但不会记录
-歌词正文。用户可以从菜单中的 **Diagnostic Log** 查看日志并截图、复制日志，
-或在 Finder 中找到文件后发送。分享前可以先查看内容并删除不希望公开的信息。
-
-## 测试
-
-运行确定性的解析器和数据源测试：
+## 构建、测试与运行
 
 ```bash
 swift test
+VERSION=2.1.0 ./scripts/package-app.sh
+open "dist/Apple Music Lyrics.app"
 ```
 
-可选的集成测试会使用 Music.app 当前歌曲检查真实的本地缓存。请先播放一首已经
-在 Music.app 中显示过歌词的 Catalog 歌曲，然后执行：
+应用位于 `dist/Apple Music Lyrics.app`。本地预览默认使用独立标识 `local.applemusiclyrics.v2`，避免覆盖原版偏好设置。此标识可由 `BUNDLE_IDENTIFIER` 环境变量替换。应用显示名暂保留 Apple Music Lyrics。
+
+首次使用需要允许应用控制 Music。没有歌词时，先在 Music 打开歌词，再在设置中“重新读取歌词缓存”。语言资源未安装时，从“翻译 → 准备语言资源…”进入系统下载流程；取消或失败不会阻止原文显示。
+
+本地包使用 ad-hoc 签名，未做 Developer ID 公证。对外分发应配置自己的签名身份和公证流程。
+
+## 打包与自有更新源
 
 ```bash
-APPLE_MUSIC_CACHE_INTEGRATION=1 \
-  swift test --filter AppleMusicCacheIntegrationTests
+VERSION=2.1.0 ./scripts/create-release-artifacts.sh
 ```
 
-测试数据中不包含受版权保护的真实歌词。
+生成 arm64 ZIP、DMG 和 `SHA256SUMS.txt` 到 `dist/release/`。包内保留 MIT License。
 
-## 项目结构
+拥有自己的仓库后再配置（下方为占位示例，请替换）：
 
-```text
-Sources/AppleMusicLyrics/
-  AppMain.swift                         应用入口
-  AppDelegate.swift                     轮询和应用状态管理
-  NowPlayingService.swift               Music.app AppleScript 集成
-  AppleMusicCacheLyricsProvider.swift   缓存索引和歌曲匹配
-  AppleTTMLParser.swift                 TTML 行级和词级时间解析
-  KaraokeRenderer.swift                 浮动面板高亮渲染
-  MenuBarController.swift               状态项和流畅歌词渲染
-  FloatingLyricsWindow.swift            浮动歌词面板
-  LyricsService.swift                   仅使用 Apple 数据的歌词服务
-  Models.swift                          公共数据模型
-  AppPreferences.swift                  UserDefaults 设置
-  DiagnosticLogger.swift               有大小上限的本地诊断日志
-  AppleScriptRunner.swift               AppleScript 执行工具
-
-Tests/AppleMusicLyricsTests/             单元测试和可选集成测试
-Resources/AppIcon.png                    应用图标源文件
-Resources/AppIcon.icns                   macOS 应用包图标
-scripts/run.sh                           Release 构建和直接运行
-scripts/package-app.sh                   本地应用包打包
-scripts/create-release-artifacts.sh      Apple 芯片版 ZIP 和 DMG 生成
-.github/workflows/release.yml            Tag 触发的 GitHub Release 工作流
+```bash
+BUNDLE_IDENTIFIER=com.yourname.lyrics \
+UPDATE_REPOSITORY=yourname/your-repository \
+VERSION=2.1.0 ./scripts/create-release-artifacts.sh
 ```
 
-## 已知限制
+本次开发没有创建、修改或推送远程仓库，也没有发布 Release。本地默认不嵌入更新源。
+仓库的 Release 工作流只在日后推送版本标签时运行，并使用所在仓库作为更新源；发布前设置仓库变量 `BUNDLE_IDENTIFIER`。
 
-- Apple 没有通过受支持的公开 MusicKit API 提供歌词正文。
-- 私有缓存数据库结构和 JSON 字段可能随时变化。
-- Music.app 下载对应响应后，歌词才能显示。
-- 缓存缺失时，本应用不会主动下载，只会重新扫描本地缓存。
-- 状态栏项目无法使用 MacBook 刘海左侧的应用菜单区域。
-- 应用使用本地 ad-hoc 签名，没有经过 Apple 公证。
+## 验收与诊断
 
-## 参与贡献
+设置中的“更新与诊断”支持查看、复制和定位日志。日志含歌曲元数据和错误信息，分享前请自行检查。
 
-欢迎提交问题和 Pull Request。开发和测试要求请参阅
-[CONTRIBUTING.md](CONTRIBUTING.md)。
-
-## 许可证和免责声明
-
-源代码基于 [MIT License](LICENSE) 发布。
-
-歌词和相关元数据的权利归各自权利人所有，不包含在本仓库的开源许可范围内。
-本项目与 Apple Inc. 没有隶属、认可或赞助关系。Apple Music 是 Apple Inc. 的
-商标。
+详细实现状态、测试记录、文件清单及人工验收项见 [开发交付报告](docs/DEVELOPMENT_REPORT.md)。
+产品规格见 [V2.1 需求文档](docs/REQUIREMENTS_V2.md)，开发约束见 [CONTRIBUTING.md](CONTRIBUTING.md)。

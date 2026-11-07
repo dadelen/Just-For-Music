@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+"$ROOT/scripts/check-build-sdk.sh"
 
 echo "→ Building AppleMusicLyrics…"
 BUILD_ARGS=(-c release --arch arm64)

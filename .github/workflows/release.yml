@@ -32,6 +32,28 @@ jobs:
             exit 1
           fi
 
+      - name: Select an SDK supporting native glass and translation strategies
+        shell: bash
+        run: |
+          python3 - <<'PYSDK'
+          import glob, os, subprocess
+          candidates = []
+          for app in glob.glob('/Applications/Xcode*.app'):
+              developer = app + '/Contents/Developer'
+              env = dict(os.environ, DEVELOPER_DIR=developer)
+              result = subprocess.run(['xcrun', '--sdk', 'macosx', '--show-sdk-version'], env=env, capture_output=True, text=True)
+              if result.returncode == 0:
+                  version = tuple(int(part) for part in result.stdout.strip().split('.'))
+                  if version >= (26, 4):
+                      candidates.append((version, developer))
+          if not candidates:
+              raise SystemExit('This runner needs Xcode with macOS SDK 26.4 or newer.')
+          developer = max(candidates)[1]
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write('DEVELOPER_DIR=' + developer + '\n')
+          print('Selected', developer)
+          PYSDK
+
       - name: Show Swift version
         run: swift --version
 
@@ -42,6 +64,8 @@ jobs:
         env:
           VERSION: ${{ github.ref_name }}
           BUILD_NUMBER: ${{ github.run_number }}
+          BUNDLE_IDENTIFIER: ${{ vars.BUNDLE_IDENTIFIER }}
+          UPDATE_REPOSITORY: ${{ github.repository }}
         shell: bash
         run: |
           VERSION="${VERSION#v}" ./scripts/create-release-artifacts.sh

@@ -25,7 +25,7 @@ struct TrackInfo: Equatable, Sendable {
     let state: PlayerState
 
     var identityKey: String {
-        "\(artist.lowercased())|\(title.lowercased())|\(Int(duration.rounded()))"
+        "\(artist.lowercased())|\(title.lowercased())|\(album.lowercased())|\(Int(duration.rounded()))"
     }
 
     var displayName: String {

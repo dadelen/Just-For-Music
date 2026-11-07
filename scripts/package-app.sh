@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+"$ROOT/scripts/check-build-sdk.sh"
 
 APP_NAME="Apple Music Lyrics"
 DIST="$ROOT/dist"
@@ -16,6 +17,17 @@ APP_ICON="$ROOT/Resources/AppIcon.icns"
 VERSION="${VERSION:-1.0.0}"
 BUILD_NUMBER="${BUILD_NUMBER:-1}"
 CODESIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
+BUNDLE_IDENTIFIER="${BUNDLE_IDENTIFIER:-local.applemusiclyrics.v2}"
+UPDATE_REPOSITORY="${UPDATE_REPOSITORY:-}"
+
+if [[ ! "$BUNDLE_IDENTIFIER" =~ ^[A-Za-z][A-Za-z0-9-]*(\.[A-Za-z0-9-]+)+$ ]]; then
+  echo "BUNDLE_IDENTIFIER must be a reverse-DNS identifier" >&2
+  exit 1
+fi
+if [[ -n "$UPDATE_REPOSITORY" && ! "$UPDATE_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+  echo "UPDATE_REPOSITORY must be owner/repository" >&2
+  exit 1
+fi
 
 if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   echo "VERSION must use numeric SemVer form, for example 1.2.3" >&2
@@ -61,6 +73,8 @@ mkdir -p "$MACOS" "$RESOURCES" "$HELPERS"
 cp "$BIN" "$MACOS/AppleMusicLyrics"
 cp "$HELPER_BIN" "$HELPERS/AppleMusicLyricsPlaybackHelper"
 cp "$APP_ICON" "$RESOURCES/AppIcon.icns"
+cp "$ROOT/LICENSE" "$RESOURCES/LICENSE"
+cp "$ROOT/Resources/InstallGuide.txt" "$RESOURCES/InstallGuide.txt"
 chmod +x "$MACOS/AppleMusicLyrics" "$HELPERS/AppleMusicLyricsPlaybackHelper"
 
 cat > "$CONTENTS/Info.plist" <<'PLIST'
@@ -73,7 +87,7 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
   <key>CFBundleExecutable</key>
   <string>AppleMusicLyrics</string>
   <key>CFBundleIdentifier</key>
-  <string>local.applemusiclyrics</string>
+  <string>local.applemusiclyrics.v2</string>
   <key>CFBundleIconFile</key>
   <string>AppIcon</string>
   <key>CFBundleInfoDictionaryVersion</key>
@@ -100,6 +114,10 @@ PLIST
 
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$CONTENTS/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$CONTENTS/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_IDENTIFIER" "$CONTENTS/Info.plist"
+if [[ -n "$UPDATE_REPOSITORY" ]]; then
+  /usr/libexec/PlistBuddy -c "Add :LyricsUpdateRepository string $UPDATE_REPOSITORY" "$CONTENTS/Info.plist"
+fi
 
 echo "→ Signing app with identity: $CODESIGN_IDENTITY"
 /usr/bin/codesign \

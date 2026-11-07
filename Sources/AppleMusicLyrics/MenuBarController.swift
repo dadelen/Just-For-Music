@@ -91,6 +91,7 @@ final class MenuBarController: NSObject {
         statusView.layer?.masksToBounds = true
         button.addSubview(statusView)
         for view in [lyricButton, previousButton, playButton, nextButton] { statusView.addSubview(view) }
+        lyricButton.layer?.masksToBounds = true
         lyricButton.addSubview(karaokeTitleView)
         lyricButton.onPress = { [weak self] in
             guard let self else { return }
@@ -124,7 +125,10 @@ final class MenuBarController: NSObject {
             control.frame = NSRect(x: viewportWidth + CGFloat(index) * 26, y: 0, width: 26, height: height)
         }
         if iconOnly { lyricButton.setSymbol("music.note", label: "打开播放器") }
-        else { lyricButton.image = nil }
+        else {
+            lyricButton.image = nil
+            lyricButton.imagePosition = .noImage
+        }
         karaokeTitleView.reloadColors()
     }
 

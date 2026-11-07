@@ -21,7 +21,7 @@ final class DiagnosticLogger: @unchecked Sendable {
         self.fileManager = fileManager
         self.directoryURL = directoryURL
             ?? fileManager.homeDirectoryForCurrentUser
-                .appendingPathComponent("Library/Logs/Apple Music Lyrics", isDirectory: true)
+                .appendingPathComponent("Library/Logs/Apple Music Lyrics V2", isDirectory: true)
         self.maximumBytes = maximumBytes
         self.logFileURL = self.directoryURL.appendingPathComponent("diagnostic.log")
         self.previousLogFileURL = self.directoryURL.appendingPathComponent("diagnostic.previous.log")
