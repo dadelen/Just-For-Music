@@ -16,22 +16,16 @@ if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   exit 1
 fi
 
-VERSION="$VERSION" BUILD_NUMBER="$BUILD_NUMBER" UNIVERSAL=1 \
+VERSION="$VERSION" BUILD_NUMBER="$BUILD_NUMBER" \
   "$ROOT/scripts/package-app.sh"
 
 APP="$ROOT/dist/$APP_NAME.app"
-BIN="$APP/Contents/MacOS/AppleMusicLyrics"
-ARCHS="$(lipo -archs "$BIN")"
-if [[ "$ARCHS" != *"arm64"* || "$ARCHS" != *"x86_64"* ]]; then
-  echo "Expected a universal binary, found: $ARCHS" >&2
-  exit 1
-fi
 
 rm -rf "$ARTIFACT_DIR" "$STAGING_DIR"
 mkdir -p "$ARTIFACT_DIR" "$STAGING_DIR"
 
-ZIP="$ARTIFACT_DIR/$SLUG-$VERSION-macos-universal.zip"
-DMG="$ARTIFACT_DIR/$SLUG-$VERSION-macos-universal.dmg"
+ZIP="$ARTIFACT_DIR/$SLUG-$VERSION-macos-arm64.zip"
+DMG="$ARTIFACT_DIR/$SLUG-$VERSION-macos-arm64.dmg"
 
 ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
 ditto "$APP" "$STAGING_DIR/$APP_NAME.app"

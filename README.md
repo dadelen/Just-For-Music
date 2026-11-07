@@ -63,7 +63,7 @@ back to scanning recent cache files.
 
 ## Compatibility
 
-- macOS 13 or later
+- Apple silicon Mac running macOS 13 or later
 - Music.app
 - Apple Music catalog tracks whose lyrics response has been cached by Music.app
 
@@ -140,11 +140,11 @@ git tag -a v1.0.0 -m "Release v1.0.0"
 git push origin v1.0.0
 ```
 
-The workflow runs the test suite, builds an `arm64` + `x86_64` universal app,
+The workflow runs the test suite, builds an Apple silicon (`arm64`) app,
 and publishes these assets to a GitHub Release:
 
-- `Apple-Music-Lyrics-<version>-macos-universal.zip`
-- `Apple-Music-Lyrics-<version>-macos-universal.dmg`
+- `Apple-Music-Lyrics-<version>-macos-arm64.zip`
+- `Apple-Music-Lyrics-<version>-macos-arm64.dmg`
 - `SHA256SUMS.txt`
 
 Release builds are ad-hoc signed unless `CODESIGN_IDENTITY` is supplied to the
@@ -255,7 +255,7 @@ Resources/AppIcon.png                    App icon source image
 Resources/AppIcon.icns                   macOS application bundle icon
 scripts/run.sh                           Release build and direct launch
 scripts/package-app.sh                   Local app bundle packaging
-scripts/create-release-artifacts.sh      Universal ZIP and DMG creation
+scripts/create-release-artifacts.sh      Apple silicon ZIP and DMG creation
 .github/workflows/release.yml            Tag-triggered GitHub Release workflow
 ```
 

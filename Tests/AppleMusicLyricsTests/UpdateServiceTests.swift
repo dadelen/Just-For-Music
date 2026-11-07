@@ -11,13 +11,22 @@ final class UpdateServiceTests: XCTestCase {
         XCTAssertNil(SemanticVersion("1.5"))
     }
 
-    func testSelectsUniversalDMGFromNewerRelease() throws {
+    func testSelectsARM64DMGFromNewerRelease() throws {
         let service = UpdateService(currentVersion: "1.5.1")
         let update = try XCTUnwrap(service.availableUpdate(from: releaseJSON(tag: "v1.6.0")))
 
         XCTAssertEqual(update.version, SemanticVersion("1.6.0"))
-        XCTAssertEqual(update.assetName, "Apple-Music-Lyrics-1.6.0-macos-universal.dmg")
+        XCTAssertEqual(update.assetName, "Apple-Music-Lyrics-1.6.0-macos-arm64.dmg")
         XCTAssertEqual(update.checksumURL.lastPathComponent, "SHA256SUMS.txt")
+    }
+
+    func testRejectsReleaseWithoutARM64DMG() {
+        let service = UpdateService(currentVersion: "1.5.1")
+        let data = releaseJSON(tag: "v1.6.0", architecture: "universal")
+
+        XCTAssertThrowsError(try service.availableUpdate(from: data)) { error in
+            XCTAssertEqual(error as? UpdateServiceError, .downloadUnavailable)
+        }
     }
 
     func testIgnoresCurrentAndPrereleaseVersions() throws {
@@ -45,13 +54,13 @@ final class UpdateServiceTests: XCTestCase {
         let expected = String(repeating: "a", count: 64)
         let contents = """
         \(String(repeating: "b", count: 64))  other.dmg
-        \(expected)  Apple-Music-Lyrics-1.6.0-macos-universal.dmg
+        \(expected)  Apple-Music-Lyrics-1.6.0-macos-arm64.dmg
         """
 
         XCTAssertEqual(
             UpdateService.expectedSHA256(
                 in: contents,
-                for: "Apple-Music-Lyrics-1.6.0-macos-universal.dmg"
+                for: "Apple-Music-Lyrics-1.6.0-macos-arm64.dmg"
             ),
             expected
         )
@@ -61,11 +70,13 @@ final class UpdateServiceTests: XCTestCase {
     private func releaseJSON(
         tag: String,
         prerelease: Bool = false,
-        downloadBaseURL: String? = nil
+        downloadBaseURL: String? = nil,
+        architecture: String = "arm64"
     ) -> Data {
         let baseURL = downloadBaseURL
             ?? "https://github.com/Takpap/apple-music-lyrics/releases/download/\(tag)"
         let version = String(tag.drop(while: { $0 == "v" }))
+        let assetPrefix = "Apple-Music-Lyrics-\(version)-macos-\(architecture)"
         let object: [String: Any] = [
             "tag_name": tag,
             "html_url": "https://github.com/Takpap/apple-music-lyrics/releases/tag/\(tag)",
@@ -73,12 +84,12 @@ final class UpdateServiceTests: XCTestCase {
             "prerelease": prerelease,
             "assets": [
                 [
-                    "name": "Apple-Music-Lyrics-\(version)-macos-universal.zip",
-                    "browser_download_url": "\(baseURL)/Apple-Music-Lyrics-\(version)-macos-universal.zip"
+                    "name": "\(assetPrefix).zip",
+                    "browser_download_url": "\(baseURL)/\(assetPrefix).zip"
                 ],
                 [
-                    "name": "Apple-Music-Lyrics-\(version)-macos-universal.dmg",
-                    "browser_download_url": "\(baseURL)/Apple-Music-Lyrics-\(version)-macos-universal.dmg"
+                    "name": "\(assetPrefix).dmg",
+                    "browser_download_url": "\(baseURL)/\(assetPrefix).dmg"
                 ],
                 [
                     "name": "SHA256SUMS.txt",

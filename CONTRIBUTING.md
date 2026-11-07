@@ -6,7 +6,7 @@ Thanks for contributing to Apple Music Lyrics.
 
 Requirements:
 
-- macOS 13 or later
+- Apple silicon Mac running macOS 13 or later
 - Swift 5.9 or Xcode 15 or later
 - Music.app for integration testing
 
@@ -36,6 +36,9 @@ APPLE_MUSIC_CACHE_INTEGRATION=1 \
   before macOS can show the permission prompt.
 - Do not commit `.build`, `dist`, app bundles, local cache data, or copyrighted lyrics.
 - Document behavior that depends on a private Apple format.
+- For V2 automatic translation, skip any lyric line that mixes Chinese and
+  another language. Fully foreign-language lines in the same song can still
+  qualify for translation.
 
 ## Test Fixtures
 
@@ -46,5 +49,5 @@ structure necessary to reproduce a parser or matching issue.
 ## Releases
 
 Maintainers publish releases with annotated tags in `vMAJOR.MINOR.PATCH` form.
-The tag workflow runs tests and uploads universal ZIP and DMG artifacts. Do not
+The tag workflow runs tests and uploads arm64 ZIP and DMG artifacts. Do not
 manually commit generated files from `dist/`.

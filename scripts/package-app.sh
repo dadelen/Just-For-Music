@@ -15,7 +15,6 @@ ENTITLEMENTS="$ROOT/AppleMusicLyrics.entitlements"
 APP_ICON="$ROOT/Resources/AppIcon.icns"
 VERSION="${VERSION:-1.0.0}"
 BUILD_NUMBER="${BUILD_NUMBER:-1}"
-UNIVERSAL="${UNIVERSAL:-0}"
 CODESIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
 
 if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -31,10 +30,7 @@ if [[ ! -f "$APP_ICON" ]]; then
   exit 1
 fi
 
-BUILD_ARGS=(-c release)
-if [[ "$UNIVERSAL" == "1" ]]; then
-  BUILD_ARGS+=(--arch arm64 --arch x86_64)
-fi
+BUILD_ARGS=(-c release --arch arm64)
 
 echo "→ Building release binary…"
 swift build "${BUILD_ARGS[@]}"
@@ -50,6 +46,14 @@ if [[ ! -x "$HELPER_BIN" ]]; then
   echo "Helper binary not found: $HELPER_BIN" >&2
   exit 1
 fi
+
+for executable in "$BIN" "$HELPER_BIN"; do
+  archs="$(lipo -archs "$executable")"
+  if [[ "$archs" != "arm64" ]]; then
+    echo "Expected an arm64 binary at $executable, found: $archs" >&2
+    exit 1
+  fi
+done
 
 echo "→ Assembling $APP"
 rm -rf "$APP"

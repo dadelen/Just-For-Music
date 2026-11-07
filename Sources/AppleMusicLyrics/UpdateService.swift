@@ -104,7 +104,7 @@ final class UpdateService: @unchecked Sendable {
               version > currentVersion else { return nil }
 
         let dmg = release.assets.first {
-            $0.name.hasSuffix("-macos-universal.dmg") && Self.isTrustedReleaseURL($0.downloadURL)
+            $0.name.hasSuffix("-macos-arm64.dmg") && Self.isTrustedReleaseURL($0.downloadURL)
         }
         let checksum = release.assets.first {
             $0.name == "SHA256SUMS.txt" && Self.isTrustedReleaseURL($0.downloadURL)

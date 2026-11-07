@@ -1,5 +1,9 @@
 import AppKit
 
+#if !arch(arm64)
+#error("Apple Music Lyrics requires Apple silicon (arm64).")
+#endif
+
 @main
 enum AppleMusicLyricsApp {
     static func main() {

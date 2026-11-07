@@ -1,6 +1,10 @@
 import AppKit
 import Foundation
 
+#if !arch(arm64)
+#error("Apple Music Lyrics Playback Helper requires Apple silicon (arm64).")
+#endif
+
 private struct Response: Codable {
     let kind: String
     let title: String?

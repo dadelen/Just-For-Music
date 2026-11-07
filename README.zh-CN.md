@@ -60,7 +60,7 @@ Music.app --AppleScript--> 歌曲信息和播放位置
 
 ## 兼容性
 
-- macOS 13 或更高版本
+- 搭载 Apple 芯片并运行 macOS 13 或更高版本的 Mac
 - Music.app
 - Music.app 已缓存歌词响应的 Apple Music Catalog 歌曲
 
@@ -133,11 +133,11 @@ git tag -a v1.0.0 -m "Release v1.0.0"
 git push origin v1.0.0
 ```
 
-工作流会运行测试，构建同时支持 `arm64` 和 `x86_64` 的 Universal 应用，并将
+工作流会运行测试，构建 Apple 芯片专用（`arm64`）应用，并将
 以下文件上传到 GitHub Release：
 
-- `Apple-Music-Lyrics-<version>-macos-universal.zip`
-- `Apple-Music-Lyrics-<version>-macos-universal.dmg`
+- `Apple-Music-Lyrics-<version>-macos-arm64.zip`
+- `Apple-Music-Lyrics-<version>-macos-arm64.dmg`
 - `SHA256SUMS.txt`
 
 除非向打包脚本提供 `CODESIGN_IDENTITY`，发布版本默认使用 ad-hoc 签名。
@@ -242,7 +242,7 @@ Resources/AppIcon.png                    应用图标源文件
 Resources/AppIcon.icns                   macOS 应用包图标
 scripts/run.sh                           Release 构建和直接运行
 scripts/package-app.sh                   本地应用包打包
-scripts/create-release-artifacts.sh      Universal ZIP 和 DMG 生成
+scripts/create-release-artifacts.sh      Apple 芯片版 ZIP 和 DMG 生成
 .github/workflows/release.yml            Tag 触发的 GitHub Release 工作流
 ```
 
