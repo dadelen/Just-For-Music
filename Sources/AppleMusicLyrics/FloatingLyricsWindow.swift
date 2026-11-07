@@ -6,7 +6,9 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
     private let panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
     private let canvas = LyricsCanvasView(frame: .zero)
     private let title = NSTextField(labelWithString: "Apple Music Lyrics")
-    private let background = NSVisualEffectView()
+    private let background = GlassSurface()
+    private let vinyl = VinylPlayerView(frame: .zero)
+    private var currentState: PlayerState = .stopped
     var onSeek: ((TimeInterval) -> Void)?
     var onVisibilityChanged: ((Bool) -> Void)?
     var isVisible: Bool { panel.isVisible }
@@ -21,18 +23,13 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
         panel.backgroundColor = .clear
         panel.isOpaque = false
         panel.delegate = self
-        background.material = .hudWindow
-        background.blendingMode = .behindWindow
-        background.state = .active
-        background.wantsLayer = true
-        background.layer?.cornerRadius = 24
-        background.layer?.masksToBounds = true
         panel.contentView = background
         title.font = .systemFont(ofSize: 13, weight: .medium)
         title.textColor = .secondaryLabelColor
         title.lineBreakMode = .byTruncatingTail
-        background.addSubview(title)
-        background.addSubview(canvas)
+        background.content.addSubview(title)
+        background.content.addSubview(vinyl)
+        background.content.addSubview(canvas)
         canvas.onSeek = { [weak self] in self?.onSeek?($0) }
         applyPreferences()
         restorePosition()
@@ -43,9 +40,11 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
         var frame = NSRect(origin: oldFrame.origin, size: AppPreferences.floatingSize.dimensions)
         frame.origin.y += oldFrame.height - frame.height
         panel.setFrame(frame, display: true)
-        title.frame = NSRect(x: 24, y: frame.height - 42, width: frame.width - 48, height: 20)
-        canvas.frame = NSRect(x: 16, y: 12, width: frame.width - 32, height: frame.height - 58)
-        background.alphaValue = CGFloat(AppPreferences.floatingLyricsOpacity)
+        let vinylWidth: CGFloat = AppPreferences.floatingSize == .small ? 240 : 320
+        vinyl.frame = NSRect(x: 12, y: 12, width: vinylWidth, height: frame.height - 24)
+        title.frame = NSRect(x: vinylWidth + 20, y: frame.height - 42, width: frame.width - vinylWidth - 44, height: 20)
+        canvas.frame = NSRect(x: vinylWidth + 4, y: 12, width: frame.width - vinylWidth - 20, height: frame.height - 62)
+        background.updateOpacity()
         var behavior: NSWindow.CollectionBehavior = [.stationary]
         behavior.insert(AppPreferences.floatingLyricsSpaceBehavior == .allSpaces ? .canJoinAllSpaces : .moveToActiveSpace)
         if AppPreferences.floatingLyricsShowOverFullScreen {
@@ -61,10 +60,13 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
     func setVisible(_ visible: Bool) {
         if visible { panel.orderFrontRegardless() } else { panel.orderOut(nil) }
         canvas.setWindowVisible(visible)
+        vinyl.update(playing: currentState == .playing, visible: visible)
         onVisibilityChanged?(visible)
     }
 
     func apply(status: AppStatus) {
+        currentState = status.track?.state ?? .stopped
+        vinyl.update(playing: currentState == .playing, visible: isVisible)
         switch status {
         case .showing(let track, let lyrics, _):
             title.stringValue = track.displayName
@@ -84,7 +86,11 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
         }
     }
 
+    func setArtwork(_ image: NSImage?) { vinyl.setArtwork(image) }
+
     func updateHighlight(for track: TrackInfo, lyrics: LyricsDocument) {
+        currentState = track.state
+        vinyl.update(playing: currentState == .playing, visible: isVisible)
         canvas.update(track: track, lyrics: lyrics)
     }
 
@@ -529,7 +535,7 @@ private final class LyricsCanvasView: NSView {
         }
         let estimated = interpolatedPosition(at: now)
         let error = track.position - estimated
-        if isPlaying, abs(error) < 0.75 {
+        if isPlaying, track.state == .playing, abs(error) < 0.75 {
             basePosition = estimated + error * 0.06
         } else {
             basePosition = track.position
@@ -804,7 +810,10 @@ private final class LyricsCanvasView: NSView {
         updateHoveredLine(lyricLineIndex(at: event, hitSlop: 0.7))
     }
 
+    override func mouseEntered(with event: NSEvent) { pointerInside = true }
+
     override func mouseExited(with event: NSEvent) {
+        pointerInside = false
         updateHoveredLine(nil)
     }
 
@@ -858,7 +867,7 @@ private final class LyricsCanvasView: NSView {
     private func seek(toLineAt selectedIndex: Int) {
         let target = lines[selectedIndex].time
         DiagnosticLogger.shared.info(
-            "Lyric click; index=\(selectedIndex); time=\(target); text=\(lines[selectedIndex].text)"
+            "Lyric click; index=\(selectedIndex); time=\(target)"
         )
         let now = CACurrentMediaTime()
         frozenPosition = target

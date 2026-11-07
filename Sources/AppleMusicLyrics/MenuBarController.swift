@@ -50,6 +50,8 @@ final class MenuBarController: NSObject {
         configureStatusItem()
     }
 
+    func setArtwork(_ image: NSImage?) { playerView.setArtwork(image) }
+
     func updateKaraokeProgress(track: TrackInfo, lyrics: LyricsDocument) {
         playerView.update(track: track, artworkURL: lyrics.artworkURL)
         updateControls(track)
@@ -185,8 +187,6 @@ private final class MenuPlayerView: NSView {
     private let remainingLabel = NSTextField(labelWithString: "-0:00")
 
     private var displayedTrackKey: String?
-    private var displayedArtworkURL: URL?
-    private var artworkTask: URLSessionDataTask?
 
     var onSeek: ((TimeInterval) -> Void)?
     var onPreviousTrack: (() -> Void)?
@@ -215,9 +215,6 @@ private final class MenuPlayerView: NSView {
         }
     }
 
-    deinit {
-        artworkTask?.cancel()
-    }
 
     private func configure() {
         artworkView.translatesAutoresizingMaskIntoConstraints = false
@@ -359,9 +356,6 @@ private final class MenuPlayerView: NSView {
     func update(track: TrackInfo?, artworkURL: URL? = nil, message: String? = nil) {
         guard let track else {
             displayedTrackKey = nil
-            displayedArtworkURL = nil
-            artworkTask?.cancel()
-            artworkTask = nil
             titleLabel.stringValue = "Apple Music Lyrics"
             subtitleLabel.stringValue = message ?? "未播放歌曲"
             setArtworkPlaceholder()
@@ -406,13 +400,7 @@ private final class MenuPlayerView: NSView {
         remainingLabel.stringValue = "-" + formatTime(max(0, duration - position))
 
         if trackChanged {
-            displayedArtworkURL = nil
-            artworkTask?.cancel()
-            artworkTask = nil
             setArtworkPlaceholder()
-        }
-        if let artworkURL, displayedArtworkURL != artworkURL {
-            loadArtwork(from: artworkURL)
         }
     }
 
@@ -430,22 +418,11 @@ private final class MenuPlayerView: NSView {
         artworkView.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.08).cgColor
     }
 
-    private func loadArtwork(from url: URL) {
-        displayedArtworkURL = url
-        artworkTask?.cancel()
-        var request = URLRequest(url: url)
-        request.cachePolicy = .returnCacheDataElseLoad
-        request.timeoutInterval = 10
-        artworkTask = URLSession.shared.dataTask(with: request) { [weak self] data, _, _ in
-            guard let data, let image = NSImage(data: data) else { return }
-            DispatchQueue.main.async {
-                guard self?.displayedArtworkURL == url else { return }
-                self?.artworkView.image = image
-                self?.artworkView.contentTintColor = nil
-                self?.artworkView.layer?.backgroundColor = NSColor.clear.cgColor
-            }
-        }
-        artworkTask?.resume()
+    func setArtwork(_ image: NSImage?) {
+        guard let image else { setArtworkPlaceholder(); return }
+        artworkView.image = image
+        artworkView.contentTintColor = nil
+        artworkView.layer?.backgroundColor = nil
     }
 
     @objc private func previousTrack(_ sender: Any?) {

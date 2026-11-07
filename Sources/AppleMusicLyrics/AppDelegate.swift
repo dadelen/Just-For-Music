@@ -3,6 +3,7 @@ import AppKit
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let menuBar = MenuBarController()
+    private let artwork = ArtworkService()
     private let settings = SettingsWindowController()
     private let floating = FloatingLyricsController()
     private let playbackMonitor = PlaybackMonitor()
@@ -27,6 +28,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppPreferences.migrate()
         logger.startSession()
+        artwork.onChange = { [weak self] image in
+            self?.menuBar.setArtwork(image)
+            self?.floating.setArtwork(image)
+        }
         playbackMonitor.onUpdate = { [weak self] result in
             self?.handlePlaybackUpdate(result)
         }
@@ -346,6 +351,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func apply(_ status: AppStatus) {
+        let url: URL?
+        if case .showing(_, let lyrics, _) = status { url = lyrics.artworkURL } else { url = nil }
+        artwork.update(track: status.track, url: url)
         // Skip full menu rebuild when the visible lyric line is unchanged.
         if case .showing(let track, let lyrics, let currentLine) = status {
             if lastTrackKeyForUI == track.identityKey, lastDisplayedLine == currentLine {
