@@ -1,18 +1,6 @@
 import AppKit
 import Foundation
 
-enum FloatingLyricsMode: String, CaseIterable {
-    case immersive
-    case desktop
-
-    var title: String {
-        switch self {
-        case .immersive: return "Immersive"
-        case .desktop: return "Desktop"
-        }
-    }
-}
-
 enum FloatingLyricsSpaceBehavior: String, CaseIterable {
     case currentDesktop
     case allSpaces
@@ -25,41 +13,74 @@ enum FloatingLyricsSpaceBehavior: String, CaseIterable {
     }
 }
 
-enum FloatingLyricsBlurStrength: String, CaseIterable {
-    case subtle
-    case regular
-    case strong
-
-    var title: String { rawValue.capitalized }
-
-    var material: NSVisualEffectView.Material {
+enum FloatingLyricsSize: String, CaseIterable {
+    case small, large
+    var dimensions: NSSize {
         switch self {
-        case .subtle: return .sidebar
-        case .regular: return .popover
-        case .strong: return .hudWindow
+        case .small: return NSSize(width: 640, height: 260)
+        case .large: return NSSize(width: 880, height: 380)
         }
     }
 }
 
+enum StatusBarMode: String, CaseIterable {
+    case automatic, full, compact, icon
+}
+
 enum AppPreferences {
+    static let didChange = Notification.Name("LyricsPreferencesChanged")
+    static var floatingSize: FloatingLyricsSize {
+        get { enumValue("floatingLyrics.size", default: .small) }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: "floatingLyrics.size") }
+    }
+    static var statusBarMode: StatusBarMode {
+        get { enumValue("statusBar.mode", default: .automatic) }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: "statusBar.mode") }
+    }
+    static var smoothScrolling: Bool {
+        get { defaultedBool("lyrics.smoothScrolling", default: true) }
+        set { UserDefaults.standard.set(newValue, forKey: "lyrics.smoothScrolling") }
+    }
+    static var gapAnimation: Bool {
+        get { defaultedBool("lyrics.gapAnimation", default: true) }
+        set { UserDefaults.standard.set(newValue, forKey: "lyrics.gapAnimation") }
+    }
+    static var fontScale: Double {
+        get {
+            let value = UserDefaults.standard.double(forKey: "lyrics.fontScale")
+            return value == 0 ? 1 : min(1.3, max(0.8, value))
+        }
+        set { UserDefaults.standard.set(newValue, forKey: "lyrics.fontScale") }
+    }
+    static var automaticTranslation: Bool {
+        get { defaultedBool("translation.enabled", default: true) }
+        set { UserDefaults.standard.set(newValue, forKey: "translation.enabled") }
+    }
+    static var highQualityTranslation: Bool {
+        get { defaultedBool("translation.highQuality", default: true) }
+        set { UserDefaults.standard.set(newValue, forKey: "translation.highQuality") }
+    }
+    static let translationTarget = "zh-Hans"
+
+    static func migrate() {
+        for key in ["floatingLyrics.locked", "floatingLyrics.clickThrough", "floatingLyrics.mode",
+                    "floatingLyrics.blurStrength", "floatingLyrics.immersiveHeight",
+                    "export.includeTranslation", "export.includeTransliteration"] {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
+    }
+
     private enum Key {
         static let floatingVisible = "floatingLyrics.visible"
-        static let locked = "floatingLyrics.locked"
-        static let clickThrough = "floatingLyrics.clickThrough"
-        static let mode = "floatingLyrics.mode"
         static let opacity = "floatingLyrics.opacity"
-        static let blurStrength = "floatingLyrics.blurStrength"
         static let spaceBehavior = "floatingLyrics.spaceBehavior"
         static let showOverFullScreen = "floatingLyrics.showOverFullScreen"
         static let showTranslation = "floatingLyrics.showTranslation"
         static let showTransliteration = "floatingLyrics.showTransliteration"
         static let framesByDisplay = "floatingLyrics.framesByDisplay"
         static let lastDisplay = "floatingLyrics.lastDisplay"
-        static let immersiveHeight = "floatingLyrics.immersiveHeight"
         static let menuBarActiveColor = "menuBarLyrics.activeColor"
         static let menuBarInactiveColor = "menuBarLyrics.inactiveColor"
-        static let exportIncludeTranslation = "export.includeTranslation"
-        static let exportIncludeTransliteration = "export.includeTransliteration"
         static let lastUpdateCheck = "updates.lastCheck"
         static let lastNotifiedVersion = "updates.lastNotifiedVersion"
     }
@@ -72,32 +93,12 @@ enum AppPreferences {
         set { UserDefaults.standard.set(newValue, forKey: Key.floatingVisible) }
     }
 
-    static var floatingLyricsLocked: Bool {
-        get { UserDefaults.standard.bool(forKey: Key.locked) }
-        set { UserDefaults.standard.set(newValue, forKey: Key.locked) }
-    }
-
-    static var floatingLyricsClickThrough: Bool {
-        get { UserDefaults.standard.bool(forKey: Key.clickThrough) }
-        set { UserDefaults.standard.set(newValue, forKey: Key.clickThrough) }
-    }
-
-    static var floatingLyricsMode: FloatingLyricsMode {
-        get { enumValue(Key.mode, default: .immersive) }
-        set { UserDefaults.standard.set(newValue.rawValue, forKey: Key.mode) }
-    }
-
     static var floatingLyricsOpacity: Double {
         get {
             guard UserDefaults.standard.object(forKey: Key.opacity) != nil else { return 0.92 }
             return min(1, max(0.35, UserDefaults.standard.double(forKey: Key.opacity)))
         }
         set { UserDefaults.standard.set(min(1, max(0.35, newValue)), forKey: Key.opacity) }
-    }
-
-    static var floatingLyricsBlurStrength: FloatingLyricsBlurStrength {
-        get { enumValue(Key.blurStrength, default: .strong) }
-        set { UserDefaults.standard.set(newValue.rawValue, forKey: Key.blurStrength) }
     }
 
     static var floatingLyricsSpaceBehavior: FloatingLyricsSpaceBehavior {
@@ -120,23 +121,6 @@ enum AppPreferences {
         set { UserDefaults.standard.set(newValue, forKey: Key.showTransliteration) }
     }
 
-    static var exportIncludeTranslation: Bool {
-        get { defaultedBool(Key.exportIncludeTranslation, default: true) }
-        set { UserDefaults.standard.set(newValue, forKey: Key.exportIncludeTranslation) }
-    }
-
-    static var exportIncludeTransliteration: Bool {
-        get { defaultedBool(Key.exportIncludeTransliteration, default: false) }
-        set { UserDefaults.standard.set(newValue, forKey: Key.exportIncludeTransliteration) }
-    }
-
-    static var lyricsExportOptions: LyricsExportOptions {
-        LyricsExportOptions(
-            includeTranslation: exportIncludeTranslation,
-            includeTransliteration: exportIncludeTransliteration
-        )
-    }
-
     static var floatingLyricsFramesByDisplay: [String: String] {
         get { UserDefaults.standard.dictionary(forKey: Key.framesByDisplay) as? [String: String] ?? [:] }
         set { UserDefaults.standard.set(newValue, forKey: Key.framesByDisplay) }
@@ -145,14 +129,6 @@ enum AppPreferences {
     static var floatingLyricsLastDisplay: String? {
         get { UserDefaults.standard.string(forKey: Key.lastDisplay) }
         set { UserDefaults.standard.set(newValue, forKey: Key.lastDisplay) }
-    }
-
-    static var floatingLyricsImmersiveHeight: Double {
-        get {
-            guard UserDefaults.standard.object(forKey: Key.immersiveHeight) != nil else { return 380 }
-            return max(220, UserDefaults.standard.double(forKey: Key.immersiveHeight))
-        }
-        set { UserDefaults.standard.set(max(220, newValue), forKey: Key.immersiveHeight) }
     }
 
     static var menuBarLyricsActiveColor: NSColor {

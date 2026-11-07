@@ -44,41 +44,20 @@ final class MenuBarController: NSObject {
         action: #selector(toggleFloating),
         keyEquivalent: "l"
     )
-    private let lockFloatingItem = NSMenuItem(
-        title: "锁定浮动歌词",
-        action: #selector(toggleFloatingLock),
-        keyEquivalent: "k"
-    )
-    private let clickThroughItem = NSMenuItem(
-        title: "鼠标穿透浮动歌词",
-        action: #selector(toggleFloatingClickThrough),
-        keyEquivalent: ""
-    )
 
-    private let exportItem = NSMenuItem(title: "导出歌词", action: nil, keyEquivalent: "")
-    private let exportTranslationItem = NSMenuItem(
-        title: "包含翻译",
-        action: #selector(toggleExportTranslation),
-        keyEquivalent: ""
-    )
-    private let exportTransliterationItem = NSMenuItem(
-        title: "包含音译",
-        action: #selector(toggleExportTransliteration),
-        keyEquivalent: ""
-    )
+
+
+
+
 
     private var diagnosticLogWindow: NSWindow?
     private var isCheckingForUpdates = false
-    private var exportableLyrics: LyricsDocument?
-    private var exportableTrack: TrackInfo?
     private var floatingVisible = false
     private var selectedColorPreference: MenuBarLyricsColorPreference?
 
     var onRefreshLyrics: (() -> Void)?
     var onCheckForUpdates: (() -> Void)?
     var onToggleFloating: (() -> Void)?
-    var onToggleFloatingLock: (() -> Void)?
-    var onToggleFloatingClickThrough: (() -> Void)?
     var onSeek: ((TimeInterval) -> Void)?
     var onPreviousTrack: (() -> Void)?
     var onTogglePlayPause: (() -> Void)?
@@ -91,12 +70,7 @@ final class MenuBarController: NSObject {
         super.init()
         floatingItem.target = self
         floatingItem.keyEquivalentModifierMask = [.control, .option]
-        lockFloatingItem.target = self
-        lockFloatingItem.keyEquivalentModifierMask = [.control, .option]
-        clickThroughItem.target = self
         checkForUpdatesItem.target = self
-        exportTranslationItem.target = self
-        exportTransliterationItem.target = self
         playerItem.view = playerView
         playerView.onSeek = { [weak self] position in self?.onSeek?(position) }
         playerView.onPreviousTrack = { [weak self] in self?.onPreviousTrack?() }
@@ -123,11 +97,6 @@ final class MenuBarController: NSObject {
     func setFloatingVisible(_ visible: Bool) {
         floatingVisible = visible
         floatingItem.state = visible ? .on : .off
-    }
-
-    func setFloatingInteraction(locked: Bool, clickThrough: Bool) {
-        lockFloatingItem.state = locked ? .on : .off
-        clickThroughItem.state = clickThrough ? .on : .off
     }
 
     func setCheckingForUpdates(_ checking: Bool) {
@@ -158,8 +127,6 @@ final class MenuBarController: NSObject {
         menu.addItem(.separator())
 
         menu.addItem(floatingItem)
-        menu.addItem(lockFloatingItem)
-        menu.addItem(clickThroughItem)
 
         let refresh = NSMenuItem(
             title: "刷新歌词",
@@ -169,8 +136,6 @@ final class MenuBarController: NSObject {
         refresh.target = self
         menu.addItem(refresh)
 
-        exportItem.submenu = makeExportMenu()
-        menu.addItem(exportItem)
 
         menu.addItem(.separator())
         for preference in MenuBarLyricsColorPreference.allCases {
@@ -235,55 +200,9 @@ final class MenuBarController: NSObject {
         menu.addItem(quit)
     }
 
-    private func makeExportMenu() -> NSMenu {
-        let exportMenu = NSMenu(title: "导出歌词")
-        for format in LyricsExportFormat.allCases {
-            let item = NSMenuItem(
-                title: "导出为 \(format.title)…",
-                action: #selector(exportLyrics(_:)),
-                keyEquivalent: format == .lrc ? "e" : ""
-            )
-            item.target = self
-            item.tag = format.rawValue
-            exportMenu.addItem(item)
-        }
-        exportMenu.addItem(.separator())
-
-        let copy = NSMenuItem(
-            title: "拷贝歌词",
-            action: #selector(copyLyrics),
-            keyEquivalent: ""
-        )
-        copy.target = self
-        exportMenu.addItem(copy)
-
-        exportMenu.addItem(.separator())
-        exportTranslationItem.state = AppPreferences.exportIncludeTranslation ? .on : .off
-        exportTransliterationItem.state = AppPreferences.exportIncludeTransliteration ? .on : .off
-        exportMenu.addItem(exportTranslationItem)
-        exportMenu.addItem(exportTransliterationItem)
-        return exportMenu
-    }
-
-    @objc private func toggleFloatingLock() {
-        onToggleFloatingLock?()
-    }
-
-    @objc private func toggleFloatingClickThrough() {
-        onToggleFloatingClickThrough?()
-    }
-
     // MARK: - Public updates
 
     func apply(status: AppStatus) {
-        if case .showing(let track, let lyrics, _) = status {
-            exportableTrack = track
-            exportableLyrics = lyrics
-        } else {
-            exportableTrack = nil
-            exportableLyrics = nil
-        }
-
         switch status {
         case .idle:
             setTitle("♪")
@@ -409,64 +328,6 @@ final class MenuBarController: NSObject {
 
     // MARK: - Lyrics export
 
-    @objc private func exportLyrics(_ sender: NSMenuItem) {
-        guard let format = LyricsExportFormat(rawValue: sender.tag),
-              let lyrics = exportableLyrics,
-              format.isAvailable(for: lyrics) else { return }
-        let track = exportableTrack
-        let text = LyricsExporter.export(
-            lyrics,
-            track: track,
-            format: format,
-            options: AppPreferences.lyricsExportOptions
-        )
-
-        let panel = NSSavePanel()
-        panel.title = "导出歌词"
-        panel.nameFieldStringValue = LyricsExporter.suggestedFilename(track: track, format: format)
-        panel.allowedContentTypes = [format.contentType]
-        panel.isExtensionHidden = false
-        panel.canCreateDirectories = true
-        NSApp.activate(ignoringOtherApps: true)
-        panel.begin { response in
-            guard response == .OK, let url = panel.url else { return }
-            do {
-                try text.write(to: url, atomically: true, encoding: .utf8)
-                DiagnosticLogger.shared.info("Lyrics exported as \(format.fileExtension): \(url.path)")
-            } catch {
-                DiagnosticLogger.shared.warning("Lyrics export failed: \(error.localizedDescription)")
-                let alert = NSAlert(error: error)
-                alert.messageText = "导出歌词失败"
-                alert.runModal()
-            }
-        }
-    }
-
-    @objc private func copyLyrics() {
-        guard let lyrics = exportableLyrics,
-              LyricsExportFormat.plainText.isAvailable(for: lyrics) else { return }
-        let text = LyricsExporter.export(
-            lyrics,
-            track: exportableTrack,
-            format: .plainText,
-            options: AppPreferences.lyricsExportOptions
-        )
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
-        DiagnosticLogger.shared.info("Lyrics copied to pasteboard")
-    }
-
-    @objc private func toggleExportTranslation() {
-        AppPreferences.exportIncludeTranslation.toggle()
-        exportTranslationItem.state = AppPreferences.exportIncludeTranslation ? .on : .off
-    }
-
-    @objc private func toggleExportTransliteration() {
-        AppPreferences.exportIncludeTransliteration.toggle()
-        exportTransliterationItem.state = AppPreferences.exportIncludeTransliteration ? .on : .off
-    }
-
     @objc private func toggleFloating() {
         onToggleFloating?()
     }
@@ -528,24 +389,6 @@ final class MenuBarController: NSObject {
         NSWorkspace.shared.activateFileViewerSelecting([DiagnosticLogger.shared.logFileURL])
     }
 
-}
-
-extension MenuBarController: NSMenuItemValidation {
-    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        switch menuItem.action {
-        case #selector(exportLyrics(_:)):
-            guard let lyrics = exportableLyrics,
-                  let format = LyricsExportFormat(rawValue: menuItem.tag) else { return false }
-            return format.isAvailable(for: lyrics)
-        case #selector(copyLyrics):
-            guard let lyrics = exportableLyrics else { return false }
-            return LyricsExportFormat.plainText.isAvailable(for: lyrics)
-        case #selector(checkForUpdates):
-            return !isCheckingForUpdates
-        default:
-            return true
-        }
-    }
 }
 
 // MARK: - Menu player

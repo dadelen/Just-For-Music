@@ -1,837 +1,128 @@
 import AppKit
-import CoreVideo
 import QuartzCore
+import CoreVideo
 
-/// Floating Apple Music-style lyrics panel with a custom, continuously animated canvas.
 final class FloatingLyricsController: NSObject, NSWindowDelegate {
-    private let panel: NSPanel
-    private let titleLabel = NSTextField(labelWithString: "No track")
-    private let subtitleLabel = NSTextField(labelWithString: "")
-    private let headerLabels = NSStackView()
-    private let canvas = LyricsCanvasView()
-    private let toolbar = NSVisualEffectView()
-    private let lockButton = NSButton()
-    private let clickThroughButton = NSButton()
-    private let modeButton = NSButton()
-    private let settingsButton = NSButton()
-    private let closeButton = NSButton()
-    private let backdropView = NSVisualEffectView()
-    private let contrastOverlay = PassthroughView()
-    private weak var glassBackdropView: NSView?
-    private var frameSaveWorkItem: DispatchWorkItem?
-    private var moveEndWorkItem: DispatchWorkItem?
-    private var localModifierMonitor: Any?
-    private var globalModifierMonitor: Any?
-    private var immersiveHeight = CGFloat(AppPreferences.floatingLyricsImmersiveHeight)
-    private var frameBeforeZoom: NSRect?
-
-    var onVisibilityChanged: ((Bool) -> Void)?
+    private let panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    private let canvas = LyricsCanvasView(frame: .zero)
+    private let title = NSTextField(labelWithString: "Apple Music Lyrics")
+    private let background = NSVisualEffectView()
     var onSeek: ((TimeInterval) -> Void)?
-    var onInteractionChanged: ((Bool, Bool) -> Void)?
-
+    var onVisibilityChanged: ((Bool) -> Void)?
     var isVisible: Bool { panel.isVisible }
 
     override init() {
-        panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 460, height: 380),
-            styleMask: [.titled, .closable, .resizable, .fullSizeContentView, .nonactivatingPanel, .utilityWindow],
-            backing: .buffered,
-            defer: false
-        )
         super.init()
-        configurePanel()
-        configureContent()
-        restoreFrame()
-        applyPreferences(animated: false)
-        installModifierMonitors()
-    }
-
-    deinit {
-        if let localModifierMonitor { NSEvent.removeMonitor(localModifierMonitor) }
-        if let globalModifierMonitor { NSEvent.removeMonitor(globalModifierMonitor) }
-    }
-
-    private func configurePanel() {
-        panel.title = "Lyrics"
-        panel.titleVisibility = .hidden
-        panel.titlebarAppearsTransparent = true
-        panel.isFloatingPanel = true
         panel.level = .floating
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        panel.isFloatingPanel = true
         panel.isMovableByWindowBackground = true
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
-        panel.delegate = self
-        panel.minSize = NSSize(width: 300, height: 220)
         panel.backgroundColor = .clear
         panel.isOpaque = false
-        panel.hasShadow = true
-        panel.animationBehavior = .utilityWindow
-        panel.acceptsMouseMovedEvents = true
-        panel.standardWindowButton(.closeButton)?.isHidden = true
-        panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
-        panel.standardWindowButton(.zoomButton)?.isHidden = true
+        panel.delegate = self
+        background.material = .hudWindow
+        background.blendingMode = .behindWindow
+        background.state = .active
+        background.wantsLayer = true
+        background.layer?.cornerRadius = 24
+        background.layer?.masksToBounds = true
+        panel.contentView = background
+        title.font = .systemFont(ofSize: 13, weight: .medium)
+        title.textColor = .secondaryLabelColor
+        title.lineBreakMode = .byTruncatingTail
+        background.addSubview(title)
+        background.addSubview(canvas)
+        canvas.onSeek = { [weak self] in self?.onSeek?($0) }
+        applyPreferences()
+        restorePosition()
     }
 
-    private func configureContent() {
-        let effect = HoverTrackingView(frame: panel.contentView?.bounds ?? .zero)
-        effect.autoresizingMask = [.width, .height]
-        effect.wantsLayer = true
-        effect.layer?.cornerRadius = 10
-        effect.layer?.masksToBounds = true
-
-        backdropView.frame = effect.bounds
-        backdropView.autoresizingMask = [.width, .height]
-        backdropView.blendingMode = .behindWindow
-        backdropView.state = .active
-        effect.addSubview(backdropView)
-#if compiler(>=6.2)
-        if #available(macOS 26.0, *) {
-            let glass = NSGlassEffectView(frame: effect.bounds)
-            glass.autoresizingMask = [.width, .height]
-            glass.cornerRadius = 10
-            glass.style = .regular
-            effect.addSubview(glass)
-            glassBackdropView = glass
+    func applyPreferences() {
+        let oldFrame = panel.frame
+        var frame = NSRect(origin: oldFrame.origin, size: AppPreferences.floatingSize.dimensions)
+        frame.origin.y += oldFrame.height - frame.height
+        panel.setFrame(frame, display: true)
+        title.frame = NSRect(x: 24, y: frame.height - 42, width: frame.width - 48, height: 20)
+        canvas.frame = NSRect(x: 16, y: 12, width: frame.width - 32, height: frame.height - 58)
+        background.alphaValue = CGFloat(AppPreferences.floatingLyricsOpacity)
+        var behavior: NSWindow.CollectionBehavior = [.stationary]
+        behavior.insert(AppPreferences.floatingLyricsSpaceBehavior == .allSpaces ? .canJoinAllSpaces : .moveToActiveSpace)
+        if AppPreferences.floatingLyricsShowOverFullScreen {
+            behavior.formUnion([.fullScreenAuxiliary, .canJoinAllApplications])
         }
-#endif
-
-        contrastOverlay.frame = effect.bounds
-        contrastOverlay.autoresizingMask = [.width, .height]
-        contrastOverlay.wantsLayer = true
-        effect.addSubview(contrastOverlay)
-
-        titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
-        titleLabel.textColor = NSColor.labelColor.withAlphaComponent(0.88)
-        titleLabel.lineBreakMode = .byTruncatingTail
-        titleLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        subtitleLabel.font = .systemFont(ofSize: 11, weight: .regular)
-        subtitleLabel.textColor = NSColor.secondaryLabelColor.withAlphaComponent(0.72)
-        subtitleLabel.lineBreakMode = .byTruncatingTail
-        subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        headerLabels.addArrangedSubview(titleLabel)
-        headerLabels.addArrangedSubview(subtitleLabel)
-        headerLabels.orientation = .vertical
-        headerLabels.alignment = .leading
-        headerLabels.spacing = 1
-        headerLabels.translatesAutoresizingMaskIntoConstraints = false
-
-        canvas.translatesAutoresizingMaskIntoConstraints = false
-        canvas.onSeek = { [weak self] position in self?.onSeek?(position) }
-        toolbar.translatesAutoresizingMaskIntoConstraints = false
-        toolbar.material = .hudWindow
-        toolbar.blendingMode = .withinWindow
-        toolbar.state = .active
-        toolbar.wantsLayer = true
-        toolbar.layer?.cornerRadius = 8
-        toolbar.layer?.masksToBounds = true
-
-        let controls = NSStackView(views: [
-            lockButton, clickThroughButton, modeButton, settingsButton, closeButton
-        ])
-        controls.orientation = .horizontal
-        controls.alignment = .centerY
-        controls.spacing = 2
-        controls.edgeInsets = NSEdgeInsets(top: 3, left: 4, bottom: 3, right: 4)
-        controls.translatesAutoresizingMaskIntoConstraints = false
-        toolbar.addSubview(controls)
-
-        configureToolbarButton(
-            lockButton,
-            symbol: "lock.open",
-            toolTip: "Lock floating lyrics",
-            action: #selector(handleToggleLocked(_:))
-        )
-        configureToolbarButton(
-            clickThroughButton,
-            symbol: "cursorarrow.rays",
-            toolTip: "Let clicks pass through",
-            action: #selector(handleToggleClickThrough(_:))
-        )
-        configureToolbarButton(
-            modeButton,
-            symbol: "rectangle.compress.vertical",
-            toolTip: "Switch display mode",
-            action: #selector(toggleMode)
-        )
-        configureToolbarButton(
-            settingsButton,
-            symbol: "slider.horizontal.3",
-            toolTip: "Floating lyrics settings",
-            action: #selector(showSettings)
-        )
-        configureToolbarButton(
-            closeButton,
-            symbol: "xmark",
-            toolTip: "Hide floating lyrics",
-            action: #selector(hideFromToolbar)
-        )
-
-        effect.addSubview(headerLabels)
-        effect.addSubview(canvas)
-        effect.addSubview(toolbar)
-        panel.contentView = effect
-        effect.onHoverChanged = { [weak self] hovering in
-            self?.setToolbarVisible(hovering)
-            self?.canvas.setPointerInside(hovering)
-        }
-        effect.onDoubleClickTop = { [weak self] in
-            self?.toggleZoomedFrame()
-        }
-
-        NSLayoutConstraint.activate([
-            headerLabels.topAnchor.constraint(equalTo: effect.topAnchor, constant: 14),
-            headerLabels.leadingAnchor.constraint(equalTo: effect.leadingAnchor, constant: 18),
-            headerLabels.trailingAnchor.constraint(lessThanOrEqualTo: toolbar.leadingAnchor, constant: -10),
-
-            canvas.topAnchor.constraint(equalTo: headerLabels.bottomAnchor, constant: 8),
-            canvas.leadingAnchor.constraint(equalTo: effect.leadingAnchor),
-            canvas.trailingAnchor.constraint(equalTo: effect.trailingAnchor),
-            canvas.bottomAnchor.constraint(equalTo: effect.bottomAnchor, constant: -6),
-            toolbar.centerYAnchor.constraint(equalTo: headerLabels.centerYAnchor),
-            toolbar.trailingAnchor.constraint(equalTo: effect.trailingAnchor, constant: -8),
-            controls.topAnchor.constraint(equalTo: toolbar.topAnchor),
-            controls.leadingAnchor.constraint(equalTo: toolbar.leadingAnchor),
-            controls.trailingAnchor.constraint(equalTo: toolbar.trailingAnchor),
-            controls.bottomAnchor.constraint(equalTo: toolbar.bottomAnchor)
-        ])
-        toolbar.alphaValue = 0
-        toolbar.isHidden = true
-    }
-
-    private func configureToolbarButton(
-        _ button: NSButton,
-        symbol: String,
-        toolTip: String,
-        action: Selector
-    ) {
-        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: toolTip)
-        button.imagePosition = .imageOnly
-        button.bezelStyle = .accessoryBarAction
-        button.isBordered = false
-        button.toolTip = toolTip
-        button.target = self
-        button.action = action
-        button.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            button.widthAnchor.constraint(equalToConstant: 28),
-            button.heightAnchor.constraint(equalToConstant: 28)
-        ])
-    }
-
-    func show() {
-        panel.orderFrontRegardless()
-        canvas.setWindowVisible(true)
-        onVisibilityChanged?(true)
-        saveFrame()
-    }
-
-    func hide() {
-        canvas.setWindowVisible(false)
-        panel.orderOut(nil)
-        onVisibilityChanged?(false)
-        saveFrame()
-    }
-
-    func toggle() {
-        isVisible ? hide() : show()
+        panel.collectionBehavior = behavior
+        canvas.setSupplementaryLyrics(showTranslation: AppPreferences.floatingLyricsShowTranslation,
+                                      showTransliteration: AppPreferences.floatingLyricsShowTransliteration)
+        canvas.invalidateGeometry()
+        constrainToScreen()
     }
 
     func setVisible(_ visible: Bool) {
-        visible ? show() : hide()
-    }
-
-    func toggleLocked() {
-        AppPreferences.floatingLyricsLocked.toggle()
-        applyInteractionPreferences()
-        applyAppearancePreferences()
-        notifyInteractionChanged()
-    }
-
-    func toggleClickThrough() {
-        AppPreferences.floatingLyricsClickThrough.toggle()
-        applyInteractionPreferences()
-        notifyInteractionChanged()
-        if AppPreferences.floatingLyricsClickThrough {
-            setToolbarVisible(false)
-        }
-    }
-
-    private func applyPreferences(animated: Bool) {
-        applyInteractionPreferences()
-        applyAppearancePreferences()
-        applySpacePreferences()
-        applyMode(AppPreferences.floatingLyricsMode, animated: animated)
-        canvas.setSupplementaryLyrics(
-            showTranslation: AppPreferences.floatingLyricsShowTranslation,
-            showTransliteration: AppPreferences.floatingLyricsShowTransliteration
-        )
-    }
-
-    private func applyInteractionPreferences(optionHeld: Bool = false) {
-        let locked = AppPreferences.floatingLyricsLocked
-        let clickThrough = AppPreferences.floatingLyricsClickThrough
-        panel.isMovableByWindowBackground = !locked
-        if locked {
-            panel.styleMask.remove(.resizable)
-        } else {
-            panel.styleMask.insert(.resizable)
-        }
-        panel.ignoresMouseEvents = (locked || clickThrough) && !optionHeld
-        panel.hasShadow = !locked
-        headerLabels.isHidden = locked
-        if locked && !optionHeld {
-            setToolbarVisible(false)
-        }
-        lockButton.image = NSImage(
-            systemSymbolName: locked ? "lock.fill" : "lock.open",
-            accessibilityDescription: locked ? "Unlock floating lyrics" : "Lock floating lyrics"
-        )
-        lockButton.toolTip = locked ? "Unlock floating lyrics" : "Lock floating lyrics"
-        clickThroughButton.image = NSImage(
-            systemSymbolName: clickThrough ? "cursorarrow.slash" : "cursorarrow.rays",
-            accessibilityDescription: clickThrough ? "Disable click-through" : "Let clicks pass through"
-        )
-        clickThroughButton.contentTintColor = clickThrough ? .controlAccentColor : nil
-    }
-
-    private func applyAppearancePreferences() {
-        let locked = AppPreferences.floatingLyricsLocked
-        let blurStrength = AppPreferences.floatingLyricsBlurStrength
-        backdropView.material = AppPreferences.floatingLyricsBlurStrength.material
-        backdropView.alphaValue = CGFloat(AppPreferences.floatingLyricsOpacity)
-        backdropView.isHidden = locked
-        let overlayAlpha: CGFloat
-        switch blurStrength {
-        case .subtle: overlayAlpha = 0.06
-        case .regular: overlayAlpha = 0.12
-        case .strong: overlayAlpha = 0.18
-        }
-        contrastOverlay.layer?.backgroundColor = NSColor.black
-            .withAlphaComponent(overlayAlpha)
-            .cgColor
-        contrastOverlay.isHidden = locked
-#if compiler(>=6.2)
-        if #available(macOS 26.0, *),
-           let glass = glassBackdropView as? NSGlassEffectView {
-            backdropView.isHidden = true
-            glass.style = blurStrength == .subtle ? .clear : .regular
-            let tintAlpha: CGFloat
-            switch blurStrength {
-            case .subtle: tintAlpha = 0.08
-            case .regular: tintAlpha = 0.16
-            case .strong: tintAlpha = 0.26
-            }
-            glass.tintColor = NSColor.windowBackgroundColor.withAlphaComponent(tintAlpha)
-            glass.alphaValue = CGFloat(AppPreferences.floatingLyricsOpacity)
-            glass.isHidden = locked
-        }
-#endif
-    }
-
-    private func applySpacePreferences() {
-        var behavior: NSWindow.CollectionBehavior = []
-        switch AppPreferences.floatingLyricsSpaceBehavior {
-        case .currentDesktop:
-            behavior.insert(.moveToActiveSpace)
-        case .allSpaces:
-            behavior.formUnion([.canJoinAllSpaces, .stationary])
-        }
-        if AppPreferences.floatingLyricsShowOverFullScreen {
-            behavior.insert(.fullScreenAuxiliary)
-        }
-        panel.collectionBehavior = behavior
-    }
-
-    private func applyMode(_ mode: FloatingLyricsMode, animated: Bool) {
-        let previousMode = canvas.displayMode
-        canvas.setDisplayMode(mode)
-        modeButton.image = NSImage(
-            systemSymbolName: mode == .immersive
-                ? "rectangle.compress.vertical"
-                : "rectangle.expand.vertical",
-            accessibilityDescription: "Switch display mode"
-        )
-
-        var frame = panel.frame
-        if mode == .desktop {
-            if previousMode == .immersive, frame.height > 260 {
-                immersiveHeight = frame.height
-                AppPreferences.floatingLyricsImmersiveHeight = frame.height
-            }
-            panel.minSize = NSSize(width: 300, height: 210)
-            panel.maxSize = NSSize(width: 10_000, height: 260)
-            let targetHeight = min(240, max(210, frame.height))
-            frame.origin.y += frame.height - targetHeight
-            frame.size.height = targetHeight
-        } else {
-            panel.minSize = NSSize(width: 300, height: 220)
-            panel.maxSize = NSSize(width: 10_000, height: 10_000)
-            if previousMode != .immersive {
-                let targetHeight = max(220, immersiveHeight)
-                frame.origin.y -= targetHeight - frame.height
-                frame.size.height = targetHeight
-            }
-        }
-        if panel.frame != frame {
-            panel.setFrame(frame, display: true, animate: animated)
-        }
-        saveFrame()
-    }
-
-    private func installModifierMonitors() {
-        localModifierMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) {
-            [weak self] event in
-            self?.applyTemporaryOptionInteraction(event.modifierFlags.contains(.option))
-            return event
-        }
-        globalModifierMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) {
-            [weak self] event in
-            DispatchQueue.main.async {
-                self?.applyTemporaryOptionInteraction(event.modifierFlags.contains(.option))
-            }
-        }
-    }
-
-    private func applyTemporaryOptionInteraction(_ optionHeld: Bool) {
-        guard AppPreferences.floatingLyricsLocked
-                || AppPreferences.floatingLyricsClickThrough else { return }
-        applyInteractionPreferences(optionHeld: optionHeld)
-        if optionHeld {
-            panel.orderFrontRegardless()
-            setToolbarVisible(true)
-        } else {
-            setToolbarVisible(false)
-        }
-    }
-
-    private func setToolbarVisible(_ visible: Bool) {
-        guard !visible || !panel.ignoresMouseEvents else { return }
-        if visible { toolbar.isHidden = false }
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.16
-            toolbar.animator().alphaValue = visible ? 1 : 0
-        } completionHandler: { [weak self] in
-            if !visible, self?.toolbar.alphaValue == 0 {
-                self?.toolbar.isHidden = true
-            }
-        }
-    }
-
-    @objc private func handleToggleLocked(_ sender: Any?) {
-        toggleLocked()
-    }
-
-    @objc private func handleToggleClickThrough(_ sender: Any?) {
-        toggleClickThrough()
-    }
-
-    @objc private func toggleMode(_ sender: Any?) {
-        let mode: FloatingLyricsMode = AppPreferences.floatingLyricsMode == .immersive
-            ? .desktop
-            : .immersive
-        AppPreferences.floatingLyricsMode = mode
-        applyMode(mode, animated: true)
-    }
-
-    @objc private func hideFromToolbar(_ sender: Any?) {
-        hide()
-    }
-
-    private func toggleZoomedFrame() {
-        if let restoreFrame = frameBeforeZoom {
-            frameBeforeZoom = nil
-            panel.setFrame(
-                restoreFrame,
-                display: true,
-                animate: !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-            )
-            saveFrame()
-            return
-        }
-
-        guard let screen = panel.screen ?? NSScreen.main else { return }
-        frameBeforeZoom = panel.frame
-        panel.setFrame(
-            screen.visibleFrame,
-            display: true,
-            animate: !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        )
-    }
-
-    @objc private func showSettings(_ sender: NSButton) {
-        let menu = settingsMenu()
-        menu.popUp(
-            positioning: nil,
-            at: NSPoint(x: sender.bounds.maxX, y: sender.bounds.minY),
-            in: sender
-        )
-    }
-
-    private func settingsMenu() -> NSMenu {
-        let menu = NSMenu(title: "Floating Lyrics Settings")
-
-        let appearance = NSMenuItem(title: "Appearance", action: nil, keyEquivalent: "")
-        let appearanceMenu = NSMenu(title: "Appearance")
-        for strength in FloatingLyricsBlurStrength.allCases {
-            let item = NSMenuItem(
-                title: "Blur: \(strength.title)",
-                action: #selector(selectBlurStrength(_:)),
-                keyEquivalent: ""
-            )
-            item.target = self
-            item.representedObject = strength.rawValue
-            item.state = AppPreferences.floatingLyricsBlurStrength == strength ? .on : .off
-            appearanceMenu.addItem(item)
-        }
-        appearanceMenu.addItem(.separator())
-        let opacityItem = NSMenuItem()
-        let opacityControl = OpacityMenuControl(value: AppPreferences.floatingLyricsOpacity)
-        opacityControl.slider.target = self
-        opacityControl.slider.action = #selector(changeOpacity(_:))
-        opacityItem.view = opacityControl
-        appearanceMenu.addItem(opacityItem)
-        appearance.submenu = appearanceMenu
-        menu.addItem(appearance)
-
-        let spaces = NSMenuItem(title: "Desktop & Full Screen", action: nil, keyEquivalent: "")
-        let spacesMenu = NSMenu(title: "Desktop & Full Screen")
-        for behavior in FloatingLyricsSpaceBehavior.allCases {
-            let item = NSMenuItem(
-                title: behavior.title,
-                action: #selector(selectSpaceBehavior(_:)),
-                keyEquivalent: ""
-            )
-            item.target = self
-            item.representedObject = behavior.rawValue
-            item.state = AppPreferences.floatingLyricsSpaceBehavior == behavior ? .on : .off
-            spacesMenu.addItem(item)
-        }
-        let fullScreen = NSMenuItem(
-            title: "Show Above Full-Screen Apps",
-            action: #selector(toggleFullScreenVisibility(_:)),
-            keyEquivalent: ""
-        )
-        fullScreen.target = self
-        fullScreen.state = AppPreferences.floatingLyricsShowOverFullScreen ? .on : .off
-        spacesMenu.addItem(.separator())
-        spacesMenu.addItem(fullScreen)
-        spaces.submenu = spacesMenu
-        menu.addItem(spaces)
-
-        menu.addItem(.separator())
-        menu.addItem(toggleItem(
-            title: "Show Translation",
-            enabled: AppPreferences.floatingLyricsShowTranslation,
-            action: #selector(toggleTranslation(_:))
-        ))
-        menu.addItem(toggleItem(
-            title: "Show Transliteration",
-            enabled: AppPreferences.floatingLyricsShowTransliteration,
-            action: #selector(toggleTransliteration(_:))
-        ))
-        return menu
-    }
-
-    private func toggleItem(title: String, enabled: Bool, action: Selector) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
-        item.target = self
-        item.state = enabled ? .on : .off
-        return item
-    }
-
-    @objc private func selectBlurStrength(_ sender: NSMenuItem) {
-        guard let rawValue = sender.representedObject as? String,
-              let strength = FloatingLyricsBlurStrength(rawValue: rawValue) else { return }
-        AppPreferences.floatingLyricsBlurStrength = strength
-        applyAppearancePreferences()
-    }
-
-    @objc private func changeOpacity(_ sender: NSSlider) {
-        AppPreferences.floatingLyricsOpacity = sender.doubleValue
-        applyAppearancePreferences()
-    }
-
-    @objc private func selectSpaceBehavior(_ sender: NSMenuItem) {
-        guard let rawValue = sender.representedObject as? String,
-              let behavior = FloatingLyricsSpaceBehavior(rawValue: rawValue) else { return }
-        AppPreferences.floatingLyricsSpaceBehavior = behavior
-        applySpacePreferences()
-    }
-
-    @objc private func toggleFullScreenVisibility(_ sender: NSMenuItem) {
-        AppPreferences.floatingLyricsShowOverFullScreen.toggle()
-        applySpacePreferences()
-    }
-
-    @objc private func toggleTranslation(_ sender: NSMenuItem) {
-        AppPreferences.floatingLyricsShowTranslation.toggle()
-        canvas.setSupplementaryLyrics(
-            showTranslation: AppPreferences.floatingLyricsShowTranslation,
-            showTransliteration: AppPreferences.floatingLyricsShowTransliteration
-        )
-    }
-
-    @objc private func toggleTransliteration(_ sender: NSMenuItem) {
-        AppPreferences.floatingLyricsShowTransliteration.toggle()
-        canvas.setSupplementaryLyrics(
-            showTranslation: AppPreferences.floatingLyricsShowTranslation,
-            showTransliteration: AppPreferences.floatingLyricsShowTransliteration
-        )
-    }
-
-    private func notifyInteractionChanged() {
-        onInteractionChanged?(
-            AppPreferences.floatingLyricsLocked,
-            AppPreferences.floatingLyricsClickThrough
-        )
+        if visible { panel.orderFrontRegardless() } else { panel.orderOut(nil) }
+        canvas.setWindowVisible(visible)
+        onVisibilityChanged?(visible)
     }
 
     func apply(status: AppStatus) {
         switch status {
-        case .idle:
-            updateHeader(title: "No track", subtitle: "")
-            canvas.clear()
-
-        case .musicNotRunning:
-            updateHeader(title: "Music is not running", subtitle: "Open Music to show lyrics")
-            canvas.showMessage("Waiting for Music")
-
-        case .stopped:
-            updateHeader(title: "Playback stopped", subtitle: "")
-            canvas.showMessage("Playback stopped")
-
-        case .loadingLyrics(let track):
-            updateHeader(title: track.title, subtitle: track.artist)
-            canvas.showMessage("Loading lyrics...")
-
         case .showing(let track, let lyrics, _):
-            updateHeader(title: track.title, subtitle: headerSubtitle(for: track))
-            if lyrics.isSynced {
-                canvas.setLyrics(lyrics, track: track)
-            } else if let plain = lyrics.plainText {
-                canvas.showPlainText(plain)
-            } else {
-                canvas.showMessage("No lyrics")
-            }
-
+            title.stringValue = track.displayName
+            if lyrics.isSynced { canvas.update(track: track, lyrics: lyrics) }
+            else { canvas.showPlainText(lyrics.plainText ?? "") }
+        case .loadingLyrics(let track):
+            title.stringValue = track.displayName
+            canvas.showMessage("正在读取歌词…")
         case .noLyrics(let track):
-            updateHeader(title: track.title, subtitle: headerSubtitle(for: track))
-            canvas.showMessage("No lyrics in Music cache")
-
+            title.stringValue = track.displayName
+            canvas.showMessage("打开音乐 App 的歌词以载入缓存")
         case .error(let message):
-            updateHeader(title: "Unable to show lyrics", subtitle: "")
             canvas.showMessage(message)
+        case .idle, .musicNotRunning, .stopped:
+            title.stringValue = "Apple Music Lyrics"
+            canvas.showMessage("播放音乐，让歌词流动")
         }
     }
 
-    /// Lightweight path used for position samples within the same lyrics document.
     func updateHighlight(for track: TrackInfo, lyrics: LyricsDocument) {
-        guard lyrics.isSynced else { return }
-        subtitleLabel.stringValue = headerSubtitle(for: track)
         canvas.update(track: track, lyrics: lyrics)
     }
 
-    private func updateHeader(title: String, subtitle: String) {
-        titleLabel.stringValue = title
-        subtitleLabel.stringValue = subtitle
-        panel.title = title
-    }
-
-    private func headerSubtitle(for track: TrackInfo) -> String {
-        let state = track.state == .paused ? "Paused" : "Playing"
-        return track.artist.isEmpty ? state : "\(track.artist)  ·  \(state)"
-    }
-
-    private func saveFrame() {
-        frameSaveWorkItem?.cancel()
-        frameSaveWorkItem = nil
-        guard frameBeforeZoom == nil else { return }
-        guard let screen = panel.screen ?? NSScreen.main else { return }
+    func windowDidMove(_ notification: Notification) {
+        guard let screen = panel.screen else { return }
         var frames = AppPreferences.floatingLyricsFramesByDisplay
-        let id = displayID(for: screen)
+        let id = displayID(screen)
         frames[id] = NSStringFromRect(panel.frame)
         AppPreferences.floatingLyricsFramesByDisplay = frames
         AppPreferences.floatingLyricsLastDisplay = id
-        if canvas.displayMode == .immersive {
-            immersiveHeight = panel.frame.height
-            AppPreferences.floatingLyricsImmersiveHeight = panel.frame.height
-        }
     }
 
-    private func scheduleFrameSave() {
-        frameSaveWorkItem?.cancel()
-        let workItem = DispatchWorkItem { [weak self] in
-            self?.saveFrame()
-        }
-        frameSaveWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: workItem)
+    private func displayID(_ screen: NSScreen) -> String {
+        String(describing: screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] ?? screen.localizedName)
     }
 
-    private func restoreFrame() {
+    private func restorePosition() {
         let frames = AppPreferences.floatingLyricsFramesByDisplay
-        let lastDisplay = AppPreferences.floatingLyricsLastDisplay
-        let preferredScreens = NSScreen.screens.sorted {
-            displayID(for: $0) == lastDisplay && displayID(for: $1) != lastDisplay
-        }
-        for screen in preferredScreens {
-            guard let raw = frames[displayID(for: screen)] else { continue }
-            let frame = NSRectFromString(raw)
-            if frame.width > 100,
-               frame.height > 100,
-               frame.intersects(screen.visibleFrame) {
-                panel.setFrame(frame, display: false)
+        let screens = NSScreen.screens.sorted { displayID($0) == AppPreferences.floatingLyricsLastDisplay && displayID($1) != AppPreferences.floatingLyricsLastDisplay }
+        for screen in screens {
+            if let stored = frames[displayID(screen)] {
+                panel.setFrameOrigin(NSRectFromString(stored).origin)
+                constrainToScreen()
                 return
             }
         }
-        // Migration from versions that stored one frame for every display.
-        if let raw = UserDefaults.standard.string(forKey: "floatingLyrics.frame") {
-            let frame = NSRectFromString(raw)
-            if frame.width > 100, frame.height > 100 {
-                panel.setFrame(frame, display: false)
-                return
-            }
-        }
-        if let screen = NSScreen.main {
-            let size = panel.frame.size
-            panel.setFrameOrigin(
-                NSPoint(
-                    x: screen.visibleFrame.midX - size.width / 2,
-                    y: screen.visibleFrame.minY + 80
-                )
-            )
-        }
+        panel.center()
     }
 
-    private func displayID(for screen: NSScreen) -> String {
-        let key = NSDeviceDescriptionKey("NSScreenNumber")
-        if let number = screen.deviceDescription[key] as? NSNumber {
-            return number.stringValue
-        }
-        return String(format: "%.0f,%.0f", screen.frame.origin.x, screen.frame.origin.y)
-    }
-
-    func windowWillClose(_ notification: Notification) {
-        canvas.setWindowVisible(false)
-        onVisibilityChanged?(false)
-        saveFrame()
-    }
-
-    func windowWillMove(_ notification: Notification) {
-        moveEndWorkItem?.cancel()
-        saveFrame()
-        panel.hasShadow = false
-        canvas.beginWindowMove()
-    }
-
-    func windowDidMove(_ notification: Notification) {
-        guard !panel.inLiveResize else { return }
-        scheduleFrameSave()
-
-        moveEndWorkItem?.cancel()
-        let workItem = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            self.canvas.endWindowMove()
-            self.panel.hasShadow = !AppPreferences.floatingLyricsLocked
-            self.panel.invalidateShadow()
-        }
-        moveEndWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: workItem)
-    }
-
-    func windowWillStartLiveResize(_ notification: Notification) {
-        panel.hasShadow = false
-        canvas.beginLiveResize()
-    }
-
-    func windowDidResize(_ notification: Notification) {
-        if panel.inLiveResize {
-            canvas.updateLiveResize()
-            return
-        }
-        scheduleFrameSave()
-        canvas.invalidateGeometry()
-    }
-
-    func windowDidEndLiveResize(_ notification: Notification) {
-        canvas.endLiveResize()
-        panel.hasShadow = !AppPreferences.floatingLyricsLocked
-        panel.invalidateShadow()
-        saveFrame()
+    private func constrainToScreen() {
+        guard let screen = panel.screen ?? NSScreen.main else { return }
+        let area = screen.visibleFrame
+        var origin = panel.frame.origin
+        origin.x = max(area.minX, min(origin.x, area.maxX - panel.frame.width))
+        origin.y = max(area.minY, min(origin.y, area.maxY - panel.frame.height))
+        panel.setFrameOrigin(origin)
     }
 }
-
-private final class PassthroughView: NSView {
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
-}
-
-private final class HoverTrackingView: NSView {
-    var onHoverChanged: ((Bool) -> Void)?
-    var onDoubleClickTop: (() -> Void)?
-    private var hoverTrackingArea: NSTrackingArea?
-
-    override func mouseDown(with event: NSEvent) {
-        let location = convert(event.locationInWindow, from: nil)
-        if event.clickCount == 2, location.y >= bounds.maxY - 54 {
-            onDoubleClickTop?()
-            return
-        }
-        super.mouseDown(with: event)
-    }
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let hoverTrackingArea { removeTrackingArea(hoverTrackingArea) }
-        let area = NSTrackingArea(
-            rect: bounds,
-            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
-            owner: self,
-            userInfo: nil
-        )
-        addTrackingArea(area)
-        hoverTrackingArea = area
-    }
-
-    override func mouseEntered(with event: NSEvent) {
-        onHoverChanged?(true)
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        onHoverChanged?(false)
-    }
-}
-
-private final class OpacityMenuControl: NSView {
-    let slider: NSSlider
-
-    init(value: Double) {
-        slider = NSSlider(value: value, minValue: 0.35, maxValue: 1, target: nil, action: nil)
-        super.init(frame: NSRect(x: 0, y: 0, width: 230, height: 38))
-        let label = NSTextField(labelWithString: "Opacity")
-        label.font = .menuFont(ofSize: 0)
-        label.translatesAutoresizingMaskIntoConstraints = false
-        slider.isContinuous = true
-        slider.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(label)
-        addSubview(slider)
-        NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
-            label.centerYAnchor.constraint(equalTo: centerYAnchor),
-            label.widthAnchor.constraint(equalToConstant: 54),
-            slider.leadingAnchor.constraint(equalTo: label.trailingAnchor, constant: 8),
-            slider.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
-            slider.centerYAnchor.constraint(equalTo: centerYAnchor)
-        ])
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-}
-
-// MARK: - Lyrics canvas
 
 private final class LyricsCanvasView: NSView {
     private struct PendingLyricClick {
@@ -860,17 +151,7 @@ private final class LyricsCanvasView: NSView {
         )
     }
 
-    private var typographyScale: CGFloat {
-        let widthScale = layoutSize.width / 460
-        let heightScale = layoutSize.height / 315
-        var scale = min(widthScale, heightScale)
-        if displayMode == .immersive {
-            let aspectRatio = layoutSize.height / max(1, layoutSize.width)
-            let tallWindowBoost = min(1.14, max(1, 1 + (aspectRatio - 1.6) * 0.10))
-            scale = min(widthScale * 1.12, scale * tallWindowBoost)
-        }
-        return min(2.2, max(0.85, scale))
-    }
+    private var typographyScale: CGFloat { CGFloat(AppPreferences.fontScale) * (AppPreferences.floatingSize == .large ? 1.3 : 1) }
 
     private var horizontalInset: CGFloat {
         min(64, max(20, layoutSize.width * 0.055))
@@ -891,11 +172,10 @@ private final class LyricsCanvasView: NSView {
     // The lyric container flips its sublayer geometry, so the content-space
     // ratio is the inverse of the desired visual position.
     private var scrollFocusRatio: CGFloat {
-        displayMode == .desktop ? 0.55 : 0.56
+        0.50
     }
 
     private var visibleLineRadius: Int {
-        guard displayMode == .immersive else { return 1 }
         let averageHeight: CGFloat
         if lineHeights.isEmpty {
             averageHeight = 39 * typographyScale
@@ -921,12 +201,9 @@ private final class LyricsCanvasView: NSView {
     private lazy var displayLink = DisplayLinkDriver { [weak self] in
         self?.updateLayerPresentation()
     }
-    private var isLiveResizing = false
-    private var liveResizeBaseSize: NSSize = .zero
-    private var liveResizeBaseTypographyScale: CGFloat = 1
+    private let isLiveResizing = false
     private var isWindowMoving = false
     private var isWindowVisible = false
-    private(set) var displayMode: FloatingLyricsMode = .immersive
     private var showsTranslation = true
     private var showsTransliteration = true
     private var hoveredLineIndex: Int?
@@ -993,12 +270,6 @@ private final class LyricsCanvasView: NSView {
         )
     }
 
-    func setDisplayMode(_ mode: FloatingLyricsMode) {
-        guard displayMode != mode else { return }
-        displayMode = mode
-        updateLayerPresentation(animateLineChange: false)
-    }
-
     func setSupplementaryLyrics(showTranslation: Bool, showTransliteration: Bool) {
         guard showsTranslation != showTranslation
                 || showsTransliteration != showTransliteration else { return }
@@ -1017,11 +288,7 @@ private final class LyricsCanvasView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         edgeMask.frame = bounds
-        if isLiveResizing {
-            applyLiveResizeTransform()
-        } else {
-            resetLyricsLayerGeometry()
-        }
+        resetLyricsLayerGeometry()
         CATransaction.commit()
         if !isLiveResizing
             && (
@@ -1099,48 +366,6 @@ private final class LyricsCanvasView: NSView {
             updateLayerPresentation(animateLineChange: false)
         }
         needsDisplay = true
-    }
-
-    func beginLiveResize() {
-        guard !isLiveResizing else { return }
-        pendingLyricClick = nil
-        liveResizeBaseSize = bounds.size
-        liveResizeBaseTypographyScale = typographyScale
-        isLiveResizing = true
-        updateLiveResize()
-        updateTimerState()
-    }
-
-    func updateLiveResize() {
-        guard isLiveResizing else { return }
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        edgeMask.frame = bounds
-        applyLiveResizeTransform()
-        CATransaction.commit()
-    }
-
-    func endLiveResize() {
-        guard isLiveResizing else { return }
-        isLiveResizing = false
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        resetLyricsLayerGeometry()
-        CATransaction.commit()
-        liveResizeBaseSize = .zero
-        invalidateGeometry()
-        updateTimerState()
-    }
-
-    private func applyLiveResizeTransform() {
-        guard liveResizeBaseSize.width > 0,
-              liveResizeBaseSize.height > 0 else { return }
-        let widthScale = bounds.width / 460
-        let heightScale = bounds.height / 315
-        let targetTypographyScale = min(2.2, max(0.85, min(widthScale, heightScale)))
-        let scale = targetTypographyScale / max(0.01, liveResizeBaseTypographyScale)
-        lyricsLayer.position = CGPoint(x: bounds.midX, y: bounds.midY)
-        lyricsLayer.transform = CATransform3DMakeScale(scale, scale, 1)
     }
 
     private func resetLyricsLayerGeometry() {
@@ -1431,9 +656,7 @@ private final class LyricsCanvasView: NSView {
             lineLayer.setVisualState(
                 opacity: opacity,
                 scale: 1,
-                hidden: displayMode == .desktop
-                    ? !(index == visibilityCenter || index == visibilityCenter + 1)
-                    : viewportDistance > visibleRadius,
+                hidden: viewportDistance > visibleRadius,
                 animated: animated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
                 duration: AnimationSpec.lineStateDuration
             )
@@ -1449,6 +672,7 @@ private final class LyricsCanvasView: NSView {
         }
 
         guard animated,
+              AppPreferences.smoothScrolling,
               isPlaying,
               !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
             lyricsLayer.removeAnimation(forKey: "lineScroll")
@@ -2134,8 +1358,8 @@ private final class KaraokeLineLayer: NoImplicitAnimationLayer {
         if let supplementaryText, !supplementaryText.isEmpty {
             supplementaryLayer = KaraokeTextLayer(
                 text: supplementaryText,
-                font: NSFont.systemFont(ofSize: max(11, font.pointSize * 0.67), weight: .regular),
-                color: NSColor.secondaryLabelColor.withAlphaComponent(0.66),
+                font: NSFont.systemFont(ofSize: max(11, font.pointSize * 0.80), weight: .regular),
+                color: NSColor.secondaryLabelColor,
                 width: width,
                 scale: contentsScale
             )
