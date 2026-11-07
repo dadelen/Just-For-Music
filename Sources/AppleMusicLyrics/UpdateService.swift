@@ -37,6 +37,7 @@ struct AppUpdate: Equatable {
 }
 
 enum UpdateServiceError: LocalizedError, Equatable {
+    case unconfigured
     case invalidCurrentVersion
     case invalidResponse
     case releaseDataInvalid
@@ -47,6 +48,7 @@ enum UpdateServiceError: LocalizedError, Equatable {
 
     var errorDescription: String? {
         switch self {
+        case .unconfigured: return "自有 GitHub 更新源待配置。"
         case .invalidCurrentVersion: return "无法读取当前应用版本。"
         case .invalidResponse: return "更新服务器返回了无效响应。"
         case .releaseDataInvalid: return "无法解析最新版本信息。"
@@ -59,9 +61,12 @@ enum UpdateServiceError: LocalizedError, Equatable {
 }
 
 final class UpdateService: @unchecked Sendable {
-    static let latestReleaseURL = URL(
-        string: "https://api.github.com/repos/Takpap/apple-music-lyrics/releases/latest"
-    )!
+    static var latestReleaseURL: URL? {
+        guard let repository = Bundle.main.object(forInfoDictionaryKey: "LyricsUpdateRepository") as? String,
+              repository.range(of: #"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"#, options: .regularExpression) != nil else { return nil }
+        return URL(string: "https://api.github.com/repos/\(repository)/releases/latest")
+    }
+    static var isConfigured: Bool { latestReleaseURL != nil }
 
     private let session: URLSession
     private let currentVersion: SemanticVersion?
@@ -82,8 +87,9 @@ final class UpdateService: @unchecked Sendable {
     }
 
     func checkForUpdate() async throws -> AppUpdate? {
+        guard let endpoint = Self.latestReleaseURL else { throw UpdateServiceError.unconfigured }
         guard currentVersion != nil else { throw UpdateServiceError.invalidCurrentVersion }
-        var request = request(for: Self.latestReleaseURL)
+        var request = request(for: endpoint)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
 
         let (data, response) = try await session.data(for: request)

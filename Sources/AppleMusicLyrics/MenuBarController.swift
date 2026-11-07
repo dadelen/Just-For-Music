@@ -1,69 +1,18 @@
 import AppKit
 import QuartzCore
 
-private enum MenuBarLyricsColorPreference: Int, CaseIterable {
-    case active
-    case inactive
-
-    var title: String {
-        switch self {
-        case .active: return "高亮歌词颜色…"
-        case .inactive: return "未高亮歌词颜色…"
-        }
-    }
-
-    var color: NSColor {
-        switch self {
-        case .active: return AppPreferences.menuBarLyricsActiveColor
-        case .inactive: return AppPreferences.menuBarLyricsInactiveColor
-        }
-    }
-
-    func save(_ color: NSColor) {
-        switch self {
-        case .active: AppPreferences.menuBarLyricsActiveColor = color
-        case .inactive: AppPreferences.menuBarLyricsInactiveColor = color
-        }
-    }
-}
-
 final class MenuBarController: NSObject {
-    private let statusItem: NSStatusItem
+    private let statusItem = NSStatusBar.system.statusItem(withLength: 258)
     private let menu = NSMenu()
     private let statusView = NSView()
     private let lyricButton = ActionButton()
     private let previousButton = ActionButton()
     private let playButton = ActionButton()
     private let nextButton = ActionButton()
-    private var viewportWidth: CGFloat = 180
     private let karaokeTitleView = KaraokeStatusTitleView()
-    private let playerItem = NSMenuItem()
     private let playerView = MenuPlayerView()
-    private let checkForUpdatesItem = NSMenuItem(
-        title: "检查更新…",
-        action: #selector(checkForUpdates),
-        keyEquivalent: ""
-    )
-
-    private let floatingItem = NSMenuItem(
-        title: "浮动歌词",
-        action: #selector(toggleFloating),
-        keyEquivalent: "l"
-    )
-
-
-
-
-
-
-    private var diagnosticLogWindow: NSWindow?
-    private var isCheckingForUpdates = false
-    private var floatingVisible = false
-    private var selectedColorPreference: MenuBarLyricsColorPreference?
-
-    var onRefreshLyrics: (() -> Void)?
-    var onCheckForUpdates: (() -> Void)?
-    var onToggleFloating: (() -> Void)?
+    private var viewportWidth: CGFloat = 180
+    var onSettings: (() -> Void)?
     var onSeek: ((TimeInterval) -> Void)?
     var onPreviousTrack: (() -> Void)?
     var onTogglePlayPause: (() -> Void)?
@@ -72,44 +21,63 @@ final class MenuBarController: NSObject {
     var onQuit: (() -> Void)?
 
     override init() {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
-        floatingItem.target = self
-        floatingItem.keyEquivalentModifierMask = [.control, .option]
-        checkForUpdatesItem.target = self
-        playerItem.view = playerView
-        playerView.onSeek = { [weak self] position in self?.onSeek?(position) }
+        playerView.onSeek = { [weak self] in self?.onSeek?($0) }
         playerView.onPreviousTrack = { [weak self] in self?.onPreviousTrack?() }
         playerView.onTogglePlayPause = { [weak self] in self?.onTogglePlayPause?() }
         playerView.onNextTrack = { [weak self] in self?.onNextTrack?() }
         playerView.onOpenMusic = { [weak self] in self?.onOpenMusic?() }
+        let playerItem = NSMenuItem()
+        playerItem.view = playerView
+        menu.addItem(playerItem)
+        let footer = NSView(frame: NSRect(x: 0, y: 0, width: 440, height: 50))
+        let settings = ActionButton(title: "设置") { [weak self] in
+            self?.menu.cancelTracking()
+            DispatchQueue.main.async { self?.onSettings?() }
+        }
+        settings.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: nil)
+        settings.imagePosition = .imageLeading
+        let quit = ActionButton(title: "退出") { [weak self] in self?.onQuit?() }
+        quit.image = NSImage(systemSymbolName: "power", accessibilityDescription: nil)
+        quit.imagePosition = .imageLeading
+        settings.frame = NSRect(x: 12, y: 8, width: 202, height: 34)
+        quit.frame = NSRect(x: 226, y: 8, width: 202, height: 34)
+        footer.addSubview(settings)
+        footer.addSubview(quit)
+        let footerItem = NSMenuItem()
+        footerItem.view = footer
+        menu.addItem(footerItem)
         configureStatusItem()
-        rebuildMenu()
     }
 
-    /// Lightweight update for playback time without rebuilding the lyrics menu.
-    func updatePlaybackProgress(track: TrackInfo) {
-        playerView.update(track: track)
-        playButton.setSymbol(track.state == .playing ? "pause.fill" : "play.fill", label: track.state == .playing ? "暂停" : "播放")
-    }
-
-    /// Repaints the status bar title without rebuilding the menu.
     func updateKaraokeProgress(track: TrackInfo, lyrics: LyricsDocument) {
-        updatePlaybackProgress(track: track)
-        guard let index = lyrics.lineIndex(at: track.position),
-              index < lyrics.lines.count else { return }
-        setKaraokeTitle(line: lyrics.lines[index], track: track)
+        playerView.update(track: track, artworkURL: lyrics.artworkURL)
+        updateControls(track)
+        if let line = lyrics.line(at: track.position) { setKaraokeTitle(line: line, track: track) }
     }
 
-    func setFloatingVisible(_ visible: Bool) {
-        floatingVisible = visible
-        floatingItem.state = visible ? .on : .off
+    func apply(status: AppStatus) {
+        updateControls(status.track)
+        switch status {
+        case .showing(let track, let lyrics, _):
+            playerView.update(track: track, artworkURL: lyrics.artworkURL)
+            if let line = lyrics.line(at: track.position) { setKaraokeTitle(line: line, track: track) }
+            else { setTitle(track.title) }
+        case .loadingLyrics(let track), .noLyrics(let track):
+            playerView.update(track: track)
+            setTitle(track.title)
+        case .error:
+            playerView.update(track: nil, message: "请检查设置中的诊断信息")
+            setTitle("音乐连接中断")
+        case .idle, .stopped, .musicNotRunning:
+            playerView.update(track: nil, message: "打开音乐 App，开始播放")
+            setTitle("♫ Music")
+        }
     }
 
-    func setCheckingForUpdates(_ checking: Bool) {
-        checkForUpdatesItem.title = checking ? "正在检查更新…" : "检查更新…"
-        checkForUpdatesItem.isEnabled = !checking
-        isCheckingForUpdates = checking
+    private func updateControls(_ track: TrackInfo?) {
+        for control in [previousButton, playButton, nextButton] { control.isEnabled = track != nil }
+        playButton.setSymbol(track?.state == .playing ? "pause.fill" : "play.fill", label: track?.state == .playing ? "暂停" : "播放")
     }
 
     private func configureStatusItem() {
@@ -158,131 +126,6 @@ final class MenuBarController: NSObject {
 
     deinit { NotificationCenter.default.removeObserver(self) }
 
-    private func rebuildMenu() {
-        menu.removeAllItems()
-
-        menu.addItem(playerItem)
-        menu.addItem(.separator())
-
-        menu.addItem(floatingItem)
-
-        let refresh = NSMenuItem(
-            title: "刷新歌词",
-            action: #selector(refreshLyrics),
-            keyEquivalent: "r"
-        )
-        refresh.target = self
-        menu.addItem(refresh)
-
-
-        menu.addItem(.separator())
-        for preference in MenuBarLyricsColorPreference.allCases {
-            let item = NSMenuItem(
-                title: preference.title,
-                action: #selector(showLyricsColorPanel(_:)),
-                keyEquivalent: ""
-            )
-            item.target = self
-            item.tag = preference.rawValue
-            menu.addItem(item)
-        }
-        let resetColors = NSMenuItem(
-            title: "恢复默认歌词颜色",
-            action: #selector(resetLyricsColors),
-            keyEquivalent: ""
-        )
-        resetColors.target = self
-        menu.addItem(resetColors)
-
-        menu.addItem(.separator())
-
-        let diagnostic = NSMenuItem(title: "诊断日志", action: nil, keyEquivalent: "")
-        let diagnosticMenu = NSMenu(title: "诊断日志")
-
-        let viewLog = NSMenuItem(
-            title: "查看日志…",
-            action: #selector(showDiagnosticLog),
-            keyEquivalent: ""
-        )
-        viewLog.target = self
-        diagnosticMenu.addItem(viewLog)
-
-        let copyLog = NSMenuItem(
-            title: "复制日志",
-            action: #selector(copyDiagnosticLog),
-            keyEquivalent: ""
-        )
-        copyLog.target = self
-        diagnosticMenu.addItem(copyLog)
-
-        let revealLog = NSMenuItem(
-            title: "在访达中显示",
-            action: #selector(revealDiagnosticLog),
-            keyEquivalent: ""
-        )
-        revealLog.target = self
-        diagnosticMenu.addItem(revealLog)
-
-        diagnostic.submenu = diagnosticMenu
-        menu.addItem(diagnostic)
-        menu.addItem(checkForUpdatesItem)
-
-        menu.addItem(.separator())
-
-        let quit = NSMenuItem(
-            title: "退出 Apple Music Lyrics",
-            action: #selector(quit),
-            keyEquivalent: "q"
-        )
-        quit.target = self
-        menu.addItem(quit)
-    }
-
-    // MARK: - Public updates
-
-    func apply(status: AppStatus) {
-        for control in [previousButton, playButton, nextButton] { control.isEnabled = status.track != nil }
-        playButton.setSymbol(status.track?.state == .playing ? "pause.fill" : "play.fill", label: status.track?.state == .playing ? "暂停" : "播放")
-        switch status {
-        case .idle:
-            setTitle("♪")
-            playerView.update(track: nil, message: "未播放歌曲")
-
-        case .musicNotRunning:
-            setTitle("♪ Music")
-            playerView.update(track: nil, message: "打开“音乐”并开始播放")
-
-        case .stopped:
-            setTitle("♪ 已停止")
-            playerView.update(track: nil, message: "播放已停止")
-
-        case .loadingLyrics(let track):
-            setTitle(truncate("… \(track.title)"))
-            playerView.update(track: track)
-
-        case .showing(let track, let lyrics, let currentLine):
-            playerView.update(track: track, artworkURL: lyrics.artworkURL)
-            if lyrics.isSynced, lyrics.lineIndex(at: track.position) != nil {
-                updateKaraokeProgress(track: track, lyrics: lyrics)
-            } else {
-                let prefix = track.state == .paused ? "⏸ " : ""
-                let display = currentLine.isEmpty ? track.displayName : currentLine
-                setTitle(truncate(prefix + display))
-            }
-
-        case .noLyrics(let track):
-            let prefix = track.state == .paused ? "⏸ " : "♪ "
-            setTitle(truncate(prefix + track.displayName))
-            playerView.update(track: track)
-
-        case .error(let message):
-            setTitle("♪ Error")
-            playerView.update(track: nil, message: message)
-        }
-    }
-
-    // MARK: - Helpers
-
     private func setTitle(_ title: String) {
         karaokeTitleView.deactivate()
         karaokeTitleView.isHidden = true
@@ -298,116 +141,7 @@ final class MenuBarController: NSObject {
         karaokeTitleView.isHidden = false
     }
 
-    private func truncate(_ text: String, limit: Int = 48) -> String {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.count > limit else { return trimmed }
-        let end = trimmed.index(trimmed.startIndex, offsetBy: limit - 1)
-        return String(trimmed[..<end]) + "…"
-    }
-
-    // MARK: - Actions
-
-    @objc private func refreshLyrics() {
-        onRefreshLyrics?()
-    }
-
-    @objc private func showLyricsColorPanel(_ sender: NSMenuItem) {
-        guard let preference = MenuBarLyricsColorPreference(rawValue: sender.tag) else { return }
-        selectedColorPreference = preference
-        let colorPanel = NSColorPanel.shared
-        colorPanel.showsAlpha = true
-        colorPanel.isContinuous = true
-        colorPanel.color = preference.color
-        colorPanel.setTarget(self)
-        colorPanel.setAction(#selector(changeLyricsColor(_:)))
-        NSApp.activate(ignoringOtherApps: true)
-        colorPanel.makeKeyAndOrderFront(nil)
-    }
-
-    @objc private func changeLyricsColor(_ sender: NSColorPanel) {
-        guard let selectedColorPreference else { return }
-        selectedColorPreference.save(sender.color)
-        karaokeTitleView.reloadColors()
-    }
-
-    @objc private func resetLyricsColors() {
-        AppPreferences.resetMenuBarLyricsColors()
-        karaokeTitleView.reloadColors()
-        if let selectedColorPreference {
-            NSColorPanel.shared.color = selectedColorPreference.color
-        }
-    }
-
-    @objc private func checkForUpdates() {
-        onCheckForUpdates?()
-    }
-
-    // MARK: - Lyrics export
-
-    @objc private func toggleFloating() {
-        onToggleFloating?()
-    }
-
-    @objc private func quit() {
-        onQuit?()
-    }
-
-    @objc private func showDiagnosticLog() {
-        let text = DiagnosticLogger.shared.contents()
-        if diagnosticLogWindow == nil {
-            let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 680, height: 520))
-            scroll.hasVerticalScroller = true
-            scroll.hasHorizontalScroller = true
-            scroll.autohidesScrollers = true
-            scroll.borderType = .noBorder
-
-            let textView = NSTextView(frame: scroll.bounds)
-            textView.isEditable = false
-            textView.isSelectable = true
-            textView.isRichText = false
-            textView.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-            textView.textContainerInset = NSSize(width: 10, height: 10)
-            textView.string = text
-            textView.autoresizingMask = [.width, .height]
-            scroll.documentView = textView
-            textView.scrollToEndOfDocument(nil)
-
-            let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 680, height: 520),
-                styleMask: [.titled, .closable, .resizable],
-                backing: .buffered,
-                defer: false
-            )
-            window.title = "Apple Music Lyrics 诊断日志"
-            window.contentView = scroll
-            window.center()
-            window.isReleasedWhenClosed = false
-            diagnosticLogWindow = window
-        } else if let scroll = diagnosticLogWindow?.contentView as? NSScrollView,
-                  let textView = scroll.documentView as? NSTextView {
-            textView.string = text
-            textView.scrollToEndOfDocument(nil)
-        }
-
-        diagnosticLogWindow?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-    }
-
-    @objc private func copyDiagnosticLog() {
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(DiagnosticLogger.shared.contents(), forType: .string)
-        DiagnosticLogger.shared.info("Diagnostic log copied to pasteboard")
-    }
-
-    @objc private func revealDiagnosticLog() {
-        DiagnosticLogger.shared.prepareFile()
-        NSWorkspace.shared.activateFileViewerSelecting([DiagnosticLogger.shared.logFileURL])
-    }
-
 }
-
-// MARK: - Menu player
 
 private final class CompactSliderCell: NSSliderCell {
     override var knobThickness: CGFloat { 10 }
@@ -461,11 +195,11 @@ private final class MenuPlayerView: NSView {
     var onOpenMusic: (() -> Void)?
 
     override var intrinsicContentSize: NSSize {
-        NSSize(width: 410, height: 126)
+        NSSize(width: 440, height: 156)
     }
 
     init() {
-        super.init(frame: NSRect(x: 0, y: 0, width: 410, height: 126))
+        super.init(frame: NSRect(x: 0, y: 0, width: 440, height: 156))
         configure()
         update(track: nil, message: "未播放歌曲")
     }
@@ -488,17 +222,19 @@ private final class MenuPlayerView: NSView {
     private func configure() {
         artworkView.translatesAutoresizingMaskIntoConstraints = false
         artworkView.wantsLayer = true
-        artworkView.layer?.cornerRadius = 8
+        artworkView.layer?.cornerRadius = 16
         artworkView.layer?.masksToBounds = true
         artworkView.imageScaling = .scaleProportionallyUpOrDown
         setArtworkPlaceholder()
 
-        titleLabel.font = .systemFont(ofSize: 15, weight: .semibold)
+        titleLabel.font = .systemFont(ofSize: 17, weight: .semibold)
+        titleLabel.alignment = .center
         titleLabel.textColor = .labelColor
         titleLabel.lineBreakMode = .byTruncatingTail
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
 
         subtitleLabel.font = .systemFont(ofSize: 12, weight: .regular)
+        subtitleLabel.alignment = .center
         subtitleLabel.textColor = .secondaryLabelColor
         subtitleLabel.lineBreakMode = .byTruncatingTail
         subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -573,7 +309,7 @@ private final class MenuPlayerView: NSView {
             artworkView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
             artworkView.widthAnchor.constraint(equalTo: artworkView.heightAnchor),
 
-            titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 10),
+            titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 18),
             titleLabel.leadingAnchor.constraint(equalTo: artworkView.trailingAnchor, constant: 14),
             titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
             subtitleLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 2),
@@ -581,7 +317,7 @@ private final class MenuPlayerView: NSView {
             subtitleLabel.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor),
 
             controls.centerXAnchor.constraint(equalTo: slider.centerXAnchor),
-            controls.topAnchor.constraint(equalTo: subtitleLabel.bottomAnchor, constant: 1),
+            controls.topAnchor.constraint(equalTo: subtitleLabel.bottomAnchor, constant: 8),
             controls.heightAnchor.constraint(equalToConstant: 30),
 
             slider.leadingAnchor.constraint(equalTo: artworkView.trailingAnchor, constant: 14),

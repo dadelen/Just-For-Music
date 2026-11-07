@@ -3,6 +3,7 @@ import AppKit
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let menuBar = MenuBarController()
+    private let settings = SettingsWindowController()
     private let floating = FloatingLyricsController()
     private let playbackMonitor = PlaybackMonitor()
     private let lyricsService = LyricsService()
@@ -29,15 +30,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         playbackMonitor.onUpdate = { [weak self] result in
             self?.handlePlaybackUpdate(result)
         }
-        menuBar.onRefreshLyrics = { [weak self] in
+        settings.actions.refresh = { [weak self] in
             self?.forceRefreshLyrics()
         }
-        menuBar.onCheckForUpdates = { [weak self] in
+        settings.actions.checkUpdates = { [weak self] in
             self?.checkForUpdates(manual: true)
         }
-        menuBar.onToggleFloating = { [weak self] in
-            self?.floating.setVisible(!(self?.floating.isVisible ?? false))
-        }
+        menuBar.onSettings = { [weak self] in self?.settings.show() }
+        NotificationCenter.default.addObserver(self, selector: #selector(preferencesChanged), name: AppPreferences.didChange, object: nil)
         menuBar.onSeek = { [weak self] position in
             self?.playbackController.seek(to: position) {
                 self?.playbackMonitor.sampleNow()
@@ -72,17 +72,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         floating.onVisibilityChanged = { [weak self] visible in
             AppPreferences.floatingLyricsVisible = visible
-            self?.menuBar.setFloatingVisible(visible)
+
         }
         let showFloating = AppPreferences.floatingLyricsVisible
         floating.setVisible(showFloating)
-        menuBar.setFloatingVisible(showFloating)
+
 
 
         menuBar.apply(status: .idle)
         floating.apply(status: .idle)
         playbackMonitor.start()
+        settings.actions.updateStatus = UpdateService.isConfigured ? "从自有 GitHub 仓库获取更新" : "自有 GitHub 更新源待配置"
         checkForUpdates(manual: false)
+    }
+
+    @objc private func preferencesChanged() {
+        floating.applyPreferences()
+        floating.setVisible(AppPreferences.floatingLyricsVisible)
+        menuBar.reloadAppearance()
+        if let track = latestTrack {
+            currentLyrics = AppPreferences.gapAnimation ? sourceLyrics.addingGaps(duration: track.duration) : sourceLyrics
+            lastDisplayedLine = nil
+            handle(track: track)
+        }
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        settings.show()
+        return true
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -94,6 +111,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Updates
 
     private func checkForUpdates(manual: Bool) {
+        guard UpdateService.isConfigured else { return }
         if !manual,
            let lastCheck = AppPreferences.lastUpdateCheck,
            Date().timeIntervalSince(lastCheck) < 24 * 60 * 60 {
@@ -101,7 +119,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         guard updateTask == nil else { return }
 
-        if manual { menuBar.setCheckingForUpdates(true) }
+        if manual { settings.actions.checkingUpdates = true }
         updateTask = Task { [weak self, updateService] in
             do {
                 let update = try await updateService.checkForUpdate()
@@ -109,7 +127,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let self else { return }
                 AppPreferences.lastUpdateCheck = Date()
                 self.updateTask = nil
-                self.menuBar.setCheckingForUpdates(false)
+                self.settings.actions.checkingUpdates = false
                 if let update {
                     let version = update.version.description
                     if manual || AppPreferences.lastNotifiedUpdateVersion != version {
@@ -126,7 +144,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard !Task.isCancelled else { return }
                 guard let self else { return }
                 self.updateTask = nil
-                self.menuBar.setCheckingForUpdates(false)
+                self.settings.actions.checkingUpdates = false
                 self.logger.warning("Update check failed: \(error.localizedDescription)")
                 if manual {
                     self.presentMessage(
@@ -159,14 +177,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func download(_ update: AppUpdate) {
-        menuBar.setCheckingForUpdates(true)
+        settings.actions.checkingUpdates = true
         updateTask = Task { [weak self, updateService] in
             do {
                 let fileURL = try await updateService.download(update)
                 guard !Task.isCancelled else { return }
                 guard let self else { return }
                 self.updateTask = nil
-                self.menuBar.setCheckingForUpdates(false)
+                self.settings.actions.checkingUpdates = false
                 NSWorkspace.shared.activateFileViewerSelecting([fileURL])
                 self.presentMessage(
                     title: "更新已下载",
@@ -176,7 +194,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard !Task.isCancelled else { return }
                 guard let self else { return }
                 self.updateTask = nil
-                self.menuBar.setCheckingForUpdates(false)
+                self.settings.actions.checkingUpdates = false
                 self.logger.warning("Update download failed: \(error.localizedDescription)")
                 self.presentMessage(title: "下载更新失败", message: error.localizedDescription)
             }
