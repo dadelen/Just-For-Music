@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var currentTrackKey: String?
     private var latestTrack: TrackInfo?
     private var currentLyrics: LyricsDocument = .empty
+    private var sourceLyrics: LyricsDocument = .empty
     private var isLoadingLyrics = false
     private var showsLoadingState = false
     private var lastLyricsAttempt = Date.distantPast
@@ -299,7 +300,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let document = await lyricsService.lyrics(for: track)
             await MainActor.run {
                 guard self.currentTrackKey == key else { return }
-                self.currentLyrics = document
+                self.sourceLyrics = document
+                self.currentLyrics = AppPreferences.gapAnimation ? document.addingGaps(duration: track.duration) : document
                 self.isLoadingLyrics = false
                 self.showsLoadingState = false
                 if let latestTrack = self.latestTrack,

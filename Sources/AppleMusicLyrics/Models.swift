@@ -54,6 +54,10 @@ struct LyricLine: Equatable, Sendable, Identifiable {
     let translation: String?
     /// Optional phonetic/romanized reading aligned to this line.
     let transliteration: String?
+    let confirmedEnd: TimeInterval?
+    let translationLanguage: String?
+    let isGap: Bool
+    let isMachineTranslation: Bool
 
     var id: String { "\(time)-\(text.hashValue)" }
 
@@ -62,13 +66,21 @@ struct LyricLine: Equatable, Sendable, Identifiable {
         text: String,
         words: [LyricWord] = [],
         translation: String? = nil,
-        transliteration: String? = nil
+        transliteration: String? = nil,
+        confirmedEnd: TimeInterval? = nil,
+        translationLanguage: String? = nil,
+        isGap: Bool = false,
+        isMachineTranslation: Bool = false
     ) {
         self.time = time
         self.text = text
         self.words = words
         self.translation = translation
         self.transliteration = transliteration
+        self.confirmedEnd = confirmedEnd
+        self.translationLanguage = translationLanguage
+        self.isGap = isGap
+        self.isMachineTranslation = isMachineTranslation
     }
 
     var endTime: TimeInterval {
@@ -92,6 +104,7 @@ struct LyricsDocument: Equatable, Sendable {
     let isSynced: Bool
     let wordTiming: WordTimingQuality
     let artworkURL: URL?
+    let sourceLanguage: String?
 
     init(
         lines: [LyricLine],
@@ -99,7 +112,8 @@ struct LyricsDocument: Equatable, Sendable {
         source: String,
         isSynced: Bool,
         wordTiming: WordTimingQuality,
-        artworkURL: URL? = nil
+        artworkURL: URL? = nil,
+        sourceLanguage: String? = nil
     ) {
         self.lines = lines
         self.plainText = plainText
@@ -107,6 +121,7 @@ struct LyricsDocument: Equatable, Sendable {
         self.isSynced = isSynced
         self.wordTiming = wordTiming
         self.artworkURL = artworkURL
+        self.sourceLanguage = sourceLanguage
     }
 
     static let empty = LyricsDocument(
@@ -153,4 +168,51 @@ enum AppStatus: Equatable, Sendable {
     case showing(track: TrackInfo, lyrics: LyricsDocument, currentLine: String)
     case noLyrics(TrackInfo)
     case error(String)
+}
+
+extension LyricsDocument {
+    /// Builds presentation-only gap cues. Source timestamps remain untouched.
+    func addingGaps(duration: TimeInterval, minimumGap: TimeInterval = 1.5) -> LyricsDocument {
+        guard isSynced, !lines.isEmpty else { return self }
+        var result: [LyricLine] = []
+        var boundary: TimeInterval? = 0
+        for line in lines {
+            if let start = boundary, line.time.isFinite, line.time - start >= minimumGap {
+                result.append(Self.gap(from: start, to: line.time))
+            }
+            result.append(line)
+            if let end = line.confirmedEnd, end.isFinite, end > line.time {
+                boundary = max(boundary ?? line.time, end)
+            } else {
+                boundary = nil
+            }
+        }
+        if let end = boundary, duration.isFinite, duration - end >= minimumGap {
+            result.append(Self.gap(from: end, to: duration))
+        }
+        return replacing(lines: result)
+    }
+
+    func replacing(lines: [LyricLine]) -> LyricsDocument {
+        LyricsDocument(lines: lines, plainText: plainText, source: source, isSynced: isSynced,
+                       wordTiming: wordTiming, artworkURL: artworkURL, sourceLanguage: sourceLanguage)
+    }
+
+    private static func gap(from start: TimeInterval, to end: TimeInterval) -> LyricLine {
+        let step = (end - start) / 3
+        let words = (0..<3).map { index in
+            LyricWord(text: "•", start: start + Double(index) * step,
+                      end: start + Double(index + 1) * step)
+        }
+        return LyricLine(time: start, text: "•••", words: words, confirmedEnd: end, isGap: true)
+    }
+}
+
+extension AppStatus {
+    var track: TrackInfo? {
+        switch self {
+        case .loadingLyrics(let track), .noLyrics(let track), .showing(let track, _, _): return track
+        default: return nil
+        }
+    }
 }

@@ -109,7 +109,8 @@ final class AppleMusicCacheLyricsProvider: @unchecked Sendable {
             source: "Apple Music",
             isSynced: true,
             wordTiming: parsed.wordTiming,
-            artworkURL: song.attributes.artwork?.resolvedURL
+            artworkURL: song.attributes.artwork?.resolvedURL,
+            sourceLanguage: selection.locale
         )
     }
 
@@ -283,6 +284,7 @@ final class AppleMusicCacheLyricsProvider: @unchecked Sendable {
         with alternatives: [LocalizedTTMLAlternative]
     ) -> [LyricLine] {
         var translations: [Int: String] = [:]
+        var translationLanguages: [Int: String] = [:]
         var transliterations: [Int: String] = [:]
 
         for alternative in alternatives {
@@ -308,8 +310,9 @@ final class AppleMusicCacheLyricsProvider: @unchecked Sendable {
                       primaryLines[index].text != alternativeLine.text else { continue }
                 if isTransliteration {
                     transliterations[index, default: alternativeLine.text] = alternativeLine.text
-                } else if translations[index] == nil {
+                } else if translations[index] == nil || normalizedLocale.hasPrefix("zh") {
                     translations[index] = alternativeLine.text
+                    translationLanguages[index] = alternative.locale
                 }
             }
         }
@@ -320,7 +323,9 @@ final class AppleMusicCacheLyricsProvider: @unchecked Sendable {
                 text: line.text,
                 words: line.words,
                 translation: translations[index],
-                transliteration: transliterations[index]
+                transliteration: transliterations[index],
+                confirmedEnd: line.confirmedEnd,
+                translationLanguage: translationLanguages[index]
             )
         }
     }

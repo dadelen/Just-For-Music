@@ -30,6 +30,12 @@ private enum MenuBarLyricsColorPreference: Int, CaseIterable {
 final class MenuBarController: NSObject {
     private let statusItem: NSStatusItem
     private let menu = NSMenu()
+    private let statusView = NSView()
+    private let lyricButton = ActionButton()
+    private let previousButton = ActionButton()
+    private let playButton = ActionButton()
+    private let nextButton = ActionButton()
+    private var viewportWidth: CGFloat = 180
     private let karaokeTitleView = KaraokeStatusTitleView()
     private let playerItem = NSMenuItem()
     private let playerView = MenuPlayerView()
@@ -84,6 +90,7 @@ final class MenuBarController: NSObject {
     /// Lightweight update for playback time without rebuilding the lyrics menu.
     func updatePlaybackProgress(track: TrackInfo) {
         playerView.update(track: track)
+        playButton.setSymbol(track.state == .playing ? "pause.fill" : "play.fill", label: track.state == .playing ? "暂停" : "播放")
     }
 
     /// Repaints the status bar title without rebuilding the menu.
@@ -106,19 +113,50 @@ final class MenuBarController: NSObject {
     }
 
     private func configureStatusItem() {
-        if let button = statusItem.button {
-            button.title = "♪"
-            button.toolTip = "Apple Music Lyrics"
-            button.font = NSFont.menuBarFont(ofSize: 13)
-            button.imagePosition = .imageLeading
-            button.wantsLayer = true
-            karaokeTitleView.frame = button.bounds
-            karaokeTitleView.autoresizingMask = [.width, .height]
-            karaokeTitleView.isHidden = true
-            button.addSubview(karaokeTitleView)
+        guard let button = statusItem.button else { return }
+        button.title = ""
+        statusView.wantsLayer = true
+        statusView.layer?.masksToBounds = true
+        button.addSubview(statusView)
+        for view in [lyricButton, previousButton, playButton, nextButton] { statusView.addSubview(view) }
+        lyricButton.addSubview(karaokeTitleView)
+        lyricButton.onPress = { [weak self] in
+            guard let self else { return }
+            self.menu.popUp(positioning: nil, at: NSPoint(x: 0, y: self.statusView.bounds.height + 3), in: self.statusView)
         }
-        statusItem.menu = menu
+        previousButton.setSymbol("backward.fill", label: "上一首")
+        playButton.setSymbol("play.fill", label: "播放")
+        nextButton.setSymbol("forward.fill", label: "下一首")
+        previousButton.onPress = { [weak self] in self?.onPreviousTrack?() }
+        playButton.onPress = { [weak self] in self?.onTogglePlayPause?() }
+        nextButton.onPress = { [weak self] in self?.onNextTrack?() }
+        NotificationCenter.default.addObserver(self, selector: #selector(reloadAppearance), name: NSApplication.didChangeScreenParametersNotification, object: nil)
+        reloadAppearance()
     }
+
+    @objc func reloadAppearance() {
+        let screen = statusItem.button?.window?.screen ?? NSScreen.main
+        let mode = AppPreferences.statusBarMode
+        let constrained = (screen?.auxiliaryTopRightArea?.width ?? 0) > 0 || (screen?.frame.width ?? 1440) < 1500
+        viewportWidth = mode == .compact || (mode == .automatic && constrained) ? 112 : 180
+        let iconOnly = mode == .icon
+        let height = NSStatusBar.system.thickness
+        let width = iconOnly ? height : viewportWidth + 78
+        statusItem.length = width
+        statusView.frame = NSRect(x: 0, y: 0, width: width, height: height)
+        lyricButton.frame = NSRect(x: 0, y: 0, width: iconOnly ? width : viewportWidth, height: height)
+        karaokeTitleView.frame = lyricButton.bounds
+        karaokeTitleView.isHidden = iconOnly || karaokeTitleView.isHidden
+        for (index, control) in [previousButton, playButton, nextButton].enumerated() {
+            control.isHidden = iconOnly
+            control.frame = NSRect(x: viewportWidth + CGFloat(index) * 26, y: 0, width: 26, height: height)
+        }
+        if iconOnly { lyricButton.setSymbol("music.note", label: "打开播放器") }
+        else { lyricButton.image = nil }
+        karaokeTitleView.reloadColors()
+    }
+
+    deinit { NotificationCenter.default.removeObserver(self) }
 
     private func rebuildMenu() {
         menu.removeAllItems()
@@ -203,6 +241,8 @@ final class MenuBarController: NSObject {
     // MARK: - Public updates
 
     func apply(status: AppStatus) {
+        for control in [previousButton, playButton, nextButton] { control.isEnabled = status.track != nil }
+        playButton.setSymbol(status.track?.state == .playing ? "pause.fill" : "play.fill", label: status.track?.state == .playing ? "暂停" : "播放")
         switch status {
         case .idle:
             setTitle("♪")
@@ -246,40 +286,16 @@ final class MenuBarController: NSObject {
     private func setTitle(_ title: String) {
         karaokeTitleView.deactivate()
         karaokeTitleView.isHidden = true
-        statusItem.length = NSStatusItem.variableLength
-        statusItem.button?.title = title
+        lyricButton.title = AppPreferences.statusBarMode == .icon ? "" : title
+        lyricButton.setAccessibilityLabel("打开播放器，" + title)
     }
 
     private func setKaraokeTitle(line: LyricLine, track: TrackInfo) {
-        guard let button = statusItem.button else { return }
-
-        let displayText = karaokeTitleView.update(line: line, track: track, limit: 120)
-        let screen = button.window?.screen ?? NSScreen.main
-        let screenWidth = screen?.frame.width ?? 1440
-        let maximumWidth: CGFloat
-        if let rightArea = screen?.auxiliaryTopRightArea, rightArea.width > 0 {
-            // On notched MacBooks, status items share only the area to the
-            // right of the camera housing. Keep lyrics to a small fraction of it.
-            maximumWidth = min(200, max(160, rightArea.width * 0.25))
-        } else if screenWidth <= 1800 {
-            maximumWidth = 180
-        } else {
-            maximumWidth = 200
-        }
-        // Keep the width stable between lines without reserving excessive
-        // menu bar space for short lyrics. Longer lines scroll within the view.
-        statusItem.length = maximumWidth
-        if button.attributedTitle.string != displayText {
-            button.attributedTitle = NSAttributedString(
-                string: displayText,
-                attributes: [
-                    .font: NSFont.menuBarFont(ofSize: 13),
-                    .foregroundColor: NSColor.clear
-                ]
-            )
-        }
+        guard AppPreferences.statusBarMode != .icon else { return }
+        lyricButton.title = ""
+        lyricButton.setAccessibilityLabel("打开播放器，" + line.text)
+        _ = karaokeTitleView.update(line: line, track: track)
         karaokeTitleView.isHidden = false
-        karaokeTitleView.needsDisplay = true
     }
 
     private func truncate(_ text: String, limit: Int = 48) -> String {
@@ -772,7 +788,7 @@ private final class KaraokeStatusTitleView: NSView {
         displayTimer?.invalidate()
     }
 
-    func update(line: LyricLine, track: TrackInfo, limit: Int) -> String {
+    func update(line: LyricLine, track: TrackInfo) -> String {
         let now = CACurrentMediaTime()
         let estimated = interpolatedPosition(at: now)
         if currentLineID != line.id {
@@ -801,7 +817,7 @@ private final class KaraokeStatusTitleView: NSView {
             lastDrawTime = now
         }
         let error = track.position - estimated
-        if isPlaying, abs(error) < 0.75 {
+        if isPlaying, track.state == .playing, abs(error) < 0.75 {
             // Small sample corrections should not become visible motion.
             basePosition = estimated + error * 0.06
         } else {
@@ -810,7 +826,7 @@ private final class KaraokeStatusTitleView: NSView {
         sampledAt = now
         isPlaying = track.state == .playing
 
-        rebuildDisplay(line: line, paused: track.state == .paused, limit: limit)
+        rebuildDisplay(line: line)
         if isPlaying || previousLine != nil {
             activateTimer()
         } else {
@@ -1049,6 +1065,10 @@ private final class KaraokeStatusTitleView: NSView {
     }
 
     private func smoothedOrigin(target: CGFloat, at now: CFTimeInterval) -> CGFloat {
+        if !AppPreferences.smoothScrolling || !isPlaying {
+            renderedOriginX = target
+            return target
+        }
         guard let renderedOriginX else {
             self.renderedOriginX = target
             lastDrawTime = now
@@ -1062,56 +1082,17 @@ private final class KaraokeStatusTitleView: NSView {
         return next
     }
 
-    private func rebuildDisplay(line: LyricLine, paused: Bool, limit: Int) {
-        let prefix = paused ? "⏸ " : ""
-        let result = NSMutableString(string: prefix)
+    private func rebuildDisplay(line: LyricLine) {
+        let prefix = ""
+        let result = NSMutableString()
         var rebuilt: [Segment] = []
-        var remaining = max(1, limit - prefix.count)
-        var truncated = false
-
         for word in line.words {
-            guard remaining > 0 else {
-                truncated = true
-                break
-            }
-            let characters = Array(word.text)
-            let take = min(remaining, characters.count)
-            let text = String(characters.prefix(take))
             let location = result.length
-            result.append(text)
-            let consumedFraction = characters.isEmpty ? 1 : Double(take) / Double(characters.count)
-            rebuilt.append(
-                Segment(
-                    range: NSRange(location: location, length: (text as NSString).length),
-                    start: word.start,
-                    end: word.start + (word.end - word.start) * consumedFraction,
-                    offset: 0,
-                    width: 0,
-                    glyphs: []
-                )
-            )
-            remaining -= take
-            if take < characters.count {
-                truncated = true
-                break
-            }
+            result.append(word.text)
+            rebuilt.append(Segment(range: NSRange(location: location, length: (word.text as NSString).length),
+                                   start: word.start, end: word.end, offset: 0, width: 0, glyphs: []))
         }
-
-        if line.words.isEmpty {
-            let characters = Array(line.text)
-            let take = min(remaining, characters.count)
-            result.append(String(characters.prefix(take)))
-            truncated = take < characters.count
-        }
-        if truncated, result.length > 0 {
-            let lastRange = result.rangeOfComposedCharacterSequence(at: result.length - 1)
-            result.replaceCharacters(in: lastRange, with: "…")
-            rebuilt = rebuilt.compactMap { segment in
-                guard NSMaxRange(segment.range) <= result.length else { return nil }
-                return segment
-            }
-        }
-
+        if line.words.isEmpty { result.append(line.text) }
         displayText = result as String
         let metrics = NSAttributedString(
             string: displayText,

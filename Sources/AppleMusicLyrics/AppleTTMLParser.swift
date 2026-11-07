@@ -115,7 +115,8 @@ enum AppleTTMLParser {
                 MutableWord(
                     text: text,
                     start: span.start,
-                    end: max(span.end ?? line.end ?? span.start + 0.1, span.start + 0.01)
+                    end: max(span.end ?? line.end ?? span.start + 0.1, span.start + 0.01),
+                    explicitEnd: span.end
                 )
             )
             self.line = line
@@ -151,7 +152,9 @@ enum AppleTTMLParser {
                     text: text,
                     words: line.words.map {
                         LyricWord(text: $0.text, start: $0.start, end: $0.end)
-                    }
+                    },
+                    confirmedEnd: line.end ?? (line.words.allSatisfy { $0.explicitEnd != nil }
+                        ? line.words.compactMap(\.explicitEnd).max() : nil)
                 )
             )
         }
@@ -229,6 +232,7 @@ enum AppleTTMLParser {
         var text: String
         let start: TimeInterval
         let end: TimeInterval
+        var explicitEnd: TimeInterval? = nil
     }
 
     enum ParseError: Error {
