@@ -8,6 +8,7 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
     private let title = NSTextField(labelWithString: "Apple Music Lyrics")
     private let background = GlassSurface()
     private let vinyl = VinylPlayerView(frame: .zero)
+    private var restoringPosition = true
     private var currentState: PlayerState = .stopped
     var onSeek: ((TimeInterval) -> Void)?
     var onVisibilityChanged: ((Bool) -> Void)?
@@ -33,7 +34,21 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
         canvas.onSeek = { [weak self] in self?.onSeek?($0) }
         applyPreferences()
         restorePosition()
+        restoringPosition = false
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(accessibilityChanged), name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(screenChanged), name: NSApplication.didChangeScreenParametersNotification, object: nil)
     }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
+    }
+
+    @objc private func accessibilityChanged() { canvas.invalidateGeometry() }
+
+    @objc private func screenChanged() { constrainToScreen() }
+
+    func resetPlaybackClock() { canvas.resetPlaybackClock() }
 
     func applyPreferences() {
         let oldFrame = panel.frame
@@ -86,6 +101,11 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
         }
     }
 
+    func attachTranslationHost(_ host: NSView) {
+        host.frame = NSRect(x: 0, y: 0, width: 1, height: 1)
+        background.content.addSubview(host)
+    }
+
     func setArtwork(_ image: NSImage?) { vinyl.setArtwork(image) }
 
     func updateHighlight(for track: TrackInfo, lyrics: LyricsDocument) {
@@ -95,6 +115,7 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
     }
 
     func windowDidMove(_ notification: Notification) {
+        guard !restoringPosition else { return }
         guard let screen = panel.screen else { return }
         var frames = AppPreferences.floatingLyricsFramesByDisplay
         let id = displayID(screen)
@@ -149,13 +170,7 @@ private final class LyricsCanvasView: NSView {
         static let clickDragThreshold: CGFloat = 5
     }
 
-    private var layoutSize: NSSize {
-        guard isLiveResizing else { return bounds.size }
-        return NSSize(
-            width: max(1, (bounds.width / 12).rounded() * 12),
-            height: max(1, (bounds.height / 10).rounded() * 10)
-        )
-    }
+    private var layoutSize: NSSize { bounds.size }
 
     private var typographyScale: CGFloat { CGFloat(AppPreferences.fontScale) * (AppPreferences.floatingSize == .large ? 1.3 : 1) }
 
@@ -207,8 +222,6 @@ private final class LyricsCanvasView: NSView {
     private lazy var displayLink = DisplayLinkDriver { [weak self] in
         self?.updateLayerPresentation()
     }
-    private let isLiveResizing = false
-    private var isWindowMoving = false
     private var isWindowVisible = false
     private var showsTranslation = true
     private var showsTransliteration = true
@@ -296,13 +309,12 @@ private final class LyricsCanvasView: NSView {
         edgeMask.frame = bounds
         resetLyricsLayerGeometry()
         CATransaction.commit()
-        if !isLiveResizing
-            && (
+        if (
                 abs(geometryWidth - layoutSize.width) > 0.5
                     || abs(geometryScale - typographyScale) > 0.01
             ) {
             // AppKit forbids recursively rebuilding TextKit content from layout().
-            // The next playback update or resize delegate callback performs it.
+            // The next playback update performs it.
             geometryWidth = 0
             geometryScale = 0
             geometryLinesID = []
@@ -367,10 +379,8 @@ private final class LyricsCanvasView: NSView {
         geometryWidth = 0
         geometryScale = 0
         geometryLinesID = []
-        if !isLiveResizing {
-            rebuildLayersIfNeeded()
-            updateLayerPresentation(animateLineChange: false)
-        }
+        rebuildLayersIfNeeded()
+        updateLayerPresentation(animateLineChange: false)
         needsDisplay = true
     }
 
@@ -380,19 +390,6 @@ private final class LyricsCanvasView: NSView {
         layerBounds.size = bounds.size
         lyricsLayer.bounds = layerBounds
         lyricsLayer.position = CGPoint(x: bounds.midX, y: bounds.midY)
-    }
-
-    func beginWindowMove() {
-        guard !isWindowMoving else { return }
-        pendingLyricClick = nil
-        isWindowMoving = true
-        stopTimer()
-    }
-
-    func endWindowMove() {
-        guard isWindowMoving else { return }
-        isWindowMoving = false
-        updateTimerState()
     }
 
     func setWindowVisible(_ visible: Bool) {
@@ -526,6 +523,19 @@ private final class LyricsCanvasView: NSView {
         )
     }
 
+    func resetPlaybackClock() {
+        isPlaying = false
+        frozenPosition = nil
+        frozenPositionDeadline = 0
+        isManualScrolling = false
+        autoFollowResumeDeadline = 0
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        invalidateGeometry()
+    }
+
     private func updateClock(_ track: TrackInfo) {
         let now = CACurrentMediaTime()
         if let frozenPosition,
@@ -571,9 +581,7 @@ private final class LyricsCanvasView: NSView {
 
     private func updateLayerPresentation(animateLineChange: Bool = true) {
         guard !lines.isEmpty else { return }
-        if !isLiveResizing {
-            rebuildLayersIfNeeded()
-        }
+        rebuildLayersIfNeeded()
 
         let frameTime = CACurrentMediaTime()
         let position = interpolatedPosition(at: frameTime)
@@ -657,7 +665,8 @@ private final class LyricsCanvasView: NSView {
             if index == activeIndex {
                 opacity = 1
             } else {
-                opacity = max(0.10, 0.68 - Float(viewportDistance) * 0.10)
+                opacity = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
+                    ? 0.85 : max(0.10, 0.68 - Float(viewportDistance) * 0.10)
             }
             lineLayer.setVisualState(
                 opacity: opacity,
@@ -739,8 +748,7 @@ private final class LyricsCanvasView: NSView {
 
     override func scrollWheel(with event: NSEvent) {
         pendingLyricClick = nil
-        guard !lines.isEmpty,
-              !isLiveResizing else {
+        guard !lines.isEmpty else {
             super.scrollWheel(with: event)
             return
         }
@@ -803,7 +811,7 @@ private final class LyricsCanvasView: NSView {
     }
 
     override func mouseMoved(with event: NSEvent) {
-        guard pointerInside, !isLiveResizing else {
+        guard pointerInside else {
             updateHoveredLine(nil)
             return
         }
@@ -850,9 +858,7 @@ private final class LyricsCanvasView: NSView {
             return
         }
         self.pendingLyricClick = nil
-        guard !isWindowMoving,
-              !isLiveResizing,
-              distance(from: pendingLyricClick.screenLocation, to: NSEvent.mouseLocation)
+        guard distance(from: pendingLyricClick.screenLocation, to: NSEvent.mouseLocation)
                 <= AnimationSpec.clickDragThreshold else {
             super.mouseUp(with: event)
             return
@@ -916,14 +922,12 @@ private final class LyricsCanvasView: NSView {
     }
 
     private func activateTimer() {
-        guard isPlaying,
-              isWindowVisible,
-              !isWindowMoving else { return }
+        guard isPlaying, isWindowVisible else { return }
         displayLink.start()
     }
 
     private func updateTimerState() {
-        if isPlaying, isWindowVisible, !isWindowMoving, !lines.isEmpty {
+        if isPlaying, isWindowVisible, !lines.isEmpty {
             activateTimer()
         } else {
             stopTimer()
@@ -1353,7 +1357,7 @@ private final class KaraokeLineLayer: NoImplicitAnimationLayer {
         upcomingLayer = KaraokeTextLayer(
             text: text,
             font: font,
-            color: NSColor.labelColor.withAlphaComponent(0.30),
+            color: NSColor.labelColor.withAlphaComponent(NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast ? 0.65 : 0.30),
             width: width,
             scale: contentsScale
         )

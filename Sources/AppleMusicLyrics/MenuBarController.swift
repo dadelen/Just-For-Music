@@ -52,8 +52,10 @@ final class MenuBarController: NSObject {
 
     func setArtwork(_ image: NSImage?) { playerView.setArtwork(image) }
 
+    func resetPlaybackClock() { karaokeTitleView.deactivate() }
+
     func updateKaraokeProgress(track: TrackInfo, lyrics: LyricsDocument) {
-        playerView.update(track: track, artworkURL: lyrics.artworkURL)
+        playerView.update(track: track)
         updateControls(track)
         if let line = lyrics.line(at: track.position) { setKaraokeTitle(line: line, track: track) }
     }
@@ -62,7 +64,7 @@ final class MenuBarController: NSObject {
         updateControls(status.track)
         switch status {
         case .showing(let track, let lyrics, _):
-            playerView.update(track: track, artworkURL: lyrics.artworkURL)
+            playerView.update(track: track)
             if let line = lyrics.line(at: track.position) { setKaraokeTitle(line: line, track: track) }
             else { setTitle(track.title) }
         case .loadingLyrics(let track), .noLyrics(let track):
@@ -186,7 +188,6 @@ private final class MenuPlayerView: NSView {
     private let elapsedLabel = NSTextField(labelWithString: "0:00")
     private let remainingLabel = NSTextField(labelWithString: "-0:00")
 
-    private var displayedTrackKey: String?
 
     var onSeek: ((TimeInterval) -> Void)?
     var onPreviousTrack: (() -> Void)?
@@ -353,9 +354,8 @@ private final class MenuPlayerView: NSView {
         ])
     }
 
-    func update(track: TrackInfo?, artworkURL: URL? = nil, message: String? = nil) {
+    func update(track: TrackInfo?, message: String? = nil) {
         guard let track else {
-            displayedTrackKey = nil
             titleLabel.stringValue = "Apple Music Lyrics"
             subtitleLabel.stringValue = message ?? "未播放歌曲"
             setArtworkPlaceholder()
@@ -369,8 +369,6 @@ private final class MenuPlayerView: NSView {
             return
         }
 
-        let trackChanged = displayedTrackKey != track.identityKey
-        displayedTrackKey = track.identityKey
         titleLabel.stringValue = track.title
         if track.artist.isEmpty {
             subtitleLabel.stringValue = track.album
@@ -399,9 +397,6 @@ private final class MenuPlayerView: NSView {
         elapsedLabel.stringValue = formatTime(position)
         remainingLabel.stringValue = "-" + formatTime(max(0, duration - position))
 
-        if trackChanged {
-            setArtworkPlaceholder()
-        }
     }
 
     private func formatTime(_ time: TimeInterval) -> String {
@@ -488,6 +483,7 @@ private final class KaraokeStatusTitleView: NSView {
     private var lastDrawTime: CFTimeInterval = 0
     private var prefixWidth: CGFloat = 0
     private var previousLine: PreviousLine?
+    private var renderedLine: LyricLine?
     private var activeColor = AppPreferences.menuBarLyricsActiveColor
     private var inactiveColor = AppPreferences.menuBarLyricsInactiveColor
 
@@ -539,7 +535,10 @@ private final class KaraokeStatusTitleView: NSView {
         sampledAt = now
         isPlaying = track.state == .playing
 
-        rebuildDisplay(line: line)
+        if renderedLine != line {
+            rebuildDisplay(line: line)
+            renderedLine = line
+        }
         if isPlaying || previousLine != nil {
             activateTimer()
         } else {
@@ -550,10 +549,12 @@ private final class KaraokeStatusTitleView: NSView {
     }
 
     func deactivate() {
+        isPlaying = false
         stopTimer()
         displayText = ""
         segments = []
         currentLineID = nil
+        renderedLine = nil
         renderedOriginX = nil
         previousLine = nil
     }
@@ -646,7 +647,7 @@ private final class KaraokeStatusTitleView: NSView {
             string: text,
             attributes: [
                 .font: font,
-                .foregroundColor: inactiveColor,
+                .foregroundColor: NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast ? inactiveColor.withAlphaComponent(max(0.72, inactiveColor.alphaComponent)) : inactiveColor,
                 .paragraphStyle: paragraph
             ]
         )
@@ -695,6 +696,7 @@ private final class KaraokeStatusTitleView: NSView {
             }
 
             for glyph in segment.glyphs {
+                guard origin.x + glyph.offset + glyph.width >= 0, origin.x + glyph.offset <= bounds.width else { continue }
                 let duration = max(0.01, glyph.end - glyph.start)
                 let fraction = min(1, max(0, (position - glyph.start) / duration))
                 draw(

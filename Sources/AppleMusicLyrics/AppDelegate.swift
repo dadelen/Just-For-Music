@@ -3,6 +3,7 @@ import AppKit
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let menuBar = MenuBarController()
+    private let translation = LocalTranslationService()
     private let artwork = ArtworkService()
     private let settings = SettingsWindowController()
     private let floating = FloatingLyricsController()
@@ -16,6 +17,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var latestTrack: TrackInfo?
     private var currentLyrics: LyricsDocument = .empty
     private var sourceLyrics: LyricsDocument = .empty
+    private var translatedLyrics: LyricsDocument?
+    private var translationSettings = [AppPreferences.automaticTranslation, AppPreferences.highQualityTranslation]
+    private var lyricsGeneration = UUID()
     private var isLoadingLyrics = false
     private var showsLoadingState = false
     private var lastLyricsAttempt = Date.distantPast
@@ -28,6 +32,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppPreferences.migrate()
         logger.startSession()
+        if let host = translation.hostView { floating.attachTranslationHost(host) }
+        translation.onStatus = { [weak self] in self?.settings.actions.translationStatus = $0 }
+        translation.onResult = { [weak self] document in
+            guard let self, let track = self.latestTrack else { return }
+            self.translatedLyrics = document
+            self.rebuildPresentation(for: track)
+            self.lastDisplayedLine = nil
+            self.handle(track: track)
+            if let host = self.translation.hostView { self.floating.attachTranslationHost(host) }
+        }
+        settings.onClose = { [weak self] in
+            guard let self else { return }
+            self.translation.cancel()
+            if let host = self.translation.hostView { self.floating.attachTranslationHost(host) }
+            if let track = self.latestTrack { self.translation.start(document: self.sourceLyrics, track: track) }
+        }
+        settings.actions.prepareTranslation = { [weak self] in
+            guard let self else { return }
+            self.translation.cancel()
+            if let host = self.translation.hostView { self.settings.attachTranslationHost(host) }
+            if let track = self.latestTrack {
+                self.translation.start(document: self.sourceLyrics, track: track)
+                self.translation.prepareResources()
+            }
+        }
         artwork.onChange = { [weak self] image in
             self?.menuBar.setArtwork(image)
             self?.floating.setArtwork(image)
@@ -45,6 +74,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.addObserver(self, selector: #selector(preferencesChanged), name: AppPreferences.didChange, object: nil)
         menuBar.onSeek = { [weak self] position in
             self?.playbackController.seek(to: position) {
+                self?.resetPlaybackClocks()
                 self?.playbackMonitor.sampleNow()
             }
         }
@@ -72,12 +102,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         floating.onSeek = { [weak self] position in
             self?.playbackController.seek(to: position) {
+                self?.resetPlaybackClocks()
                 self?.playbackMonitor.sampleNow()
             }
         }
-        floating.onVisibilityChanged = { [weak self] visible in
-            AppPreferences.floatingLyricsVisible = visible
-
+        floating.onVisibilityChanged = { visible in
+            if AppPreferences.floatingLyricsVisible != visible { AppPreferences.floatingLyricsVisible = visible }
         }
         let showFloating = AppPreferences.floatingLyricsVisible
         floating.setVisible(showFloating)
@@ -96,10 +126,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         floating.setVisible(AppPreferences.floatingLyricsVisible)
         menuBar.reloadAppearance()
         if let track = latestTrack {
-            currentLyrics = AppPreferences.gapAnimation ? sourceLyrics.addingGaps(duration: track.duration) : sourceLyrics
+            let options = [AppPreferences.automaticTranslation, AppPreferences.highQualityTranslation]
+            if options != translationSettings {
+                translationSettings = options
+                translatedLyrics = nil
+                translation.start(document: sourceLyrics, track: track)
+            }
+            rebuildPresentation(for: track)
             lastDisplayedLine = nil
             handle(track: track)
         }
+    }
+
+    private func rebuildPresentation(for track: TrackInfo) {
+        let lyrics = AppPreferences.automaticTranslation ? (translatedLyrics ?? sourceLyrics) : sourceLyrics
+        currentLyrics = AppPreferences.gapAnimation ? lyrics.addingGaps(duration: track.duration) : lyrics
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -109,6 +150,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         logger.info("Application terminating")
+        translation.cancel()
         updateTask?.cancel()
         playbackMonitor.stop()
     }
@@ -239,6 +281,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func handlePlaybackUpdate(_ result: PlaybackMonitor.Update) {
         switch result {
         case .failure(let error):
+            currentTrackKey = nil
+            lyricsGeneration = UUID()
+            isLoadingLyrics = false
+            translation.cancel()
+            latestTrack = nil
             let message = error.localizedDescription
             let isNewError = lastLoggedPlaybackState != "error"
             logPlaybackState("error")
@@ -261,14 +308,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .stopped:
             logPlaybackState("playback stopped")
             latestTrack = nil
+            translation.cancel()
+            lyricsGeneration = UUID()
             currentTrackKey = nil
+            sourceLyrics = .empty
+            translatedLyrics = nil
             currentLyrics = .empty
             apply(.stopped)
 
         case .musicNotRunning:
             logPlaybackState("Music.app not running")
             latestTrack = nil
+            translation.cancel()
+            lyricsGeneration = UUID()
             currentTrackKey = nil
+            sourceLyrics = .empty
+            translatedLyrics = nil
             currentLyrics = .empty
             apply(.musicNotRunning)
         }
@@ -283,6 +338,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 "Lyrics lookup triggered; reason=\(trackChanged ? "track changed" : "manual refresh"); "
                     + "track=\(track.displayName); duration=\(Int(track.duration.rounded()))"
             )
+            translation.cancel()
+            sourceLyrics = .empty
+            translatedLyrics = nil
             currentTrackKey = key
             currentLyrics = .empty
             forceRefresh = false
@@ -318,24 +376,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         showsLoadingState = showLoading
         lastLyricsAttempt = Date()
         let key = track.identityKey
+        lyricsGeneration = UUID()
+        let generation = lyricsGeneration
 
         Task { [lyricsService] in
             let document = await lyricsService.lyrics(for: track)
             await MainActor.run {
-                guard self.currentTrackKey == key else { return }
+                guard self.currentTrackKey == key, self.lyricsGeneration == generation else { return }
                 self.sourceLyrics = document
-                self.currentLyrics = AppPreferences.gapAnimation ? document.addingGaps(duration: track.duration) : document
+                self.translatedLyrics = nil
+                self.rebuildPresentation(for: track)
                 self.isLoadingLyrics = false
                 self.showsLoadingState = false
                 if let latestTrack = self.latestTrack,
                    latestTrack.identityKey == key {
                     self.handle(track: latestTrack)
+                    if !document.lines.isEmpty { self.translation.start(document: document, track: latestTrack) }
                 }
             }
         }
     }
 
     private func forceRefreshLyrics() {
+        translation.cancel()
+        lyricsGeneration = UUID()
         logger.info("Manual lyrics refresh requested")
         currentTrackKey = nil
         lastDisplayedLine = nil
@@ -348,6 +412,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard lastLoggedPlaybackState != state else { return }
         lastLoggedPlaybackState = state
         logger.info("Playback state: \(state)")
+    }
+
+    private func resetPlaybackClocks() {
+        menuBar.resetPlaybackClock()
+        floating.resetPlaybackClock()
+        lastDisplayedLine = nil
     }
 
     private func apply(_ status: AppStatus) {

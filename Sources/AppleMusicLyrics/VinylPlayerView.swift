@@ -36,6 +36,11 @@ final class VinylPlayerView: NSView {
         arm.lineCap = .round
         arm.lineJoin = .round
         arm.anchorPoint = .zero
+        arm.setValue(0.20, forKeyPath: "transform.rotation.z")
+        arm.shadowColor = NSColor.black.cgColor
+        arm.shadowOpacity = 0.20
+        arm.shadowRadius = 1
+        arm.shadowOffset = CGSize(width: 0, height: -0.5)
         layer?.addSublayer(arm)
         pivot.fillColor = NSColor.white.cgColor
         pivot.strokeColor = NSColor.black.withAlphaComponent(0.12).cgColor

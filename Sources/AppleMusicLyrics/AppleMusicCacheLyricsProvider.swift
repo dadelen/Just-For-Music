@@ -257,8 +257,17 @@ final class AppleMusicCacheLyricsProvider: @unchecked Sendable {
         case .localized(let values):
             localizations = values
         }
+        let primaryKeys = localizations.keys.filter {
+            let value = $0.lowercased()
+            return !["translation", "translit", "roman", "latn"].contains(where: value.contains)
+        }
+        let candidates = primaryKeys.isEmpty ? Array(localizations.keys) : primaryKeys
+        let timedKeys = candidates.filter {
+            guard let ttml = localizations[$0], let parsed = try? AppleTTMLParser.parse(ttml) else { return false }
+            return parsed.wordTiming == .exact
+        }
         let selectedKey = LyricsLocaleMatcher.bestKey(
-            in: localizations.keys,
+            in: timedKeys.isEmpty ? candidates : timedKeys,
             preferredLanguages: preferredLanguages
         )
         guard let key = selectedKey ?? localizations.keys.sorted().first,

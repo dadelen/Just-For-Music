@@ -9,6 +9,8 @@ final class ArtworkService {
     private var task: Task<Void, Never>?
     private let cache = NSCache<NSURL, NSImage>()
 
+    init() { cache.countLimit = 32 }
+
     func update(track: TrackInfo?, url: URL?) {
         guard let track else {
             guard trackKey != nil else { return }
@@ -63,8 +65,8 @@ final class ArtworkService {
         guard let result = script?.executeAndReturnError(&error), error == nil,
               result.atIndex(1)?.stringValue == track.title,
               result.atIndex(2)?.stringValue == track.artist,
-              let rawDuration = result.atIndex(3)?.stringValue,
-              let duration = Double(rawDuration), abs(duration - track.duration) < 2 else { return nil }
+              let durationDescriptor = result.atIndex(3),
+              abs(durationDescriptor.doubleValue - track.duration) < 2 else { return nil }
         return result.atIndex(4)?.data
     }
 }

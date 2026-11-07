@@ -10,15 +10,28 @@ final class SettingsActions: ObservableObject {
     var prepareTranslation: (() -> Void)?
 }
 
-final class SettingsWindowController {
+final class SettingsWindowController: NSObject, NSWindowDelegate {
+    var onClose: (() -> Void)?
+
+    func windowWillClose(_ notification: Notification) { onClose?() }
     let actions = SettingsActions()
     private var window: NSWindow?
+
+    func attachTranslationHost(_ host: NSView) {
+        show()
+        host.removeFromSuperview()
+        host.frame = NSRect(x: 0, y: 0, width: 1, height: 1)
+        window?.contentView?.addSubview(host)
+    }
 
     func show() {
         if window == nil {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 540), styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView], backing: .buffered, defer: false)
+            window.delegate = self
             window.title = "Apple Music Lyrics 设置"
             window.titlebarAppearsTransparent = true
+            window.isOpaque = false
+            window.backgroundColor = .clear
             window.isReleasedWhenClosed = false
             let surface = GlassSurface()
             let host = NSHostingView(rootView: SettingsView(actions: actions))
