@@ -92,6 +92,37 @@ private func write(_ response: Response) {
     FileHandle.standardOutput.write(data)
 }
 
+private func control(_ arguments: [String]) -> Int32 {
+    let command: String
+    switch arguments.first {
+    case "previous" where arguments.count == 1: command = "previous track"
+    case "toggle" where arguments.count == 1: command = "playpause"
+    case "next" where arguments.count == 1: command = "next track"
+    case "seek" where arguments.count == 2:
+        guard let seconds = TimeInterval(arguments[1]), seconds.isFinite, seconds >= 0 else { return 64 }
+        command = "set player position to \(seconds)"
+    default:
+        return 64
+    }
+    guard let script = NSAppleScript(source: """
+        with timeout of 3 seconds
+            tell application "Music" to \(command)
+        end timeout
+        """) else { return 1 }
+    var errorInfo: NSDictionary?
+    script.executeAndReturnError(&errorInfo)
+    if let errorInfo {
+        let message = errorInfo[NSAppleScript.errorMessage] as? String ?? "Unable to control Music"
+        FileHandle.standardError.write(Data(message.utf8))
+        return 1
+    }
+    return 0
+}
+
+if CommandLine.arguments.dropFirst().first == "--control" {
+    exit(control(Array(CommandLine.arguments.dropFirst(2))))
+}
+
 while readLine() != nil {
     autoreleasepool {
         write(sample())

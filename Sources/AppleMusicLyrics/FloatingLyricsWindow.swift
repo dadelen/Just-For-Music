@@ -10,9 +10,17 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
     private let artist = NSTextField(labelWithString: "")
     private let background = GlassSurface()
     private let vinyl = VinylPlayerView(frame: .zero)
+    private let controls = PlaybackControls(buttonWidth: 36, grouped: true)
+    private let closeButton = WindowDotButton(color: .systemRed, symbol: "xmark", label: "关闭歌词窗口")
+    private let lockButton = WindowDotButton(color: .systemYellow, symbol: "lock.fill", label: "锁定窗口位置")
+    private let modeButton = WindowDotButton(color: .systemGreen, symbol: "arrow.up.left.and.arrow.down.right", label: "选择歌词窗口模式")
+    private let modeMenu = NSMenu()
     private var restoringPosition = true
     private var currentState: PlayerState = .stopped
     var onSeek: ((TimeInterval) -> Void)?
+    var onPreviousTrack: (() -> Void)?
+    var onTogglePlayPause: (() -> Void)?
+    var onNextTrack: (() -> Void)?
     var onVisibilityChanged: ((Bool) -> Void)?
     var isVisible: Bool { panel.isVisible }
 
@@ -20,7 +28,6 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
         super.init()
         panel.level = .floating
         panel.isFloatingPanel = true
-        panel.isMovableByWindowBackground = true
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
         panel.backgroundColor = .clear
@@ -35,6 +42,26 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
         }
         artist.textColor = .secondaryLabelColor
         background.content.addSubview(canvas)
+        background.content.addSubview(controls)
+        for button in [closeButton, lockButton, modeButton] {
+            background.content.addSubview(button)
+        }
+        closeButton.onPress = { [weak self] in self?.setVisible(false) }
+        lockButton.onPress = { [weak self] in
+            AppPreferences.floatingPositionLocked.toggle()
+            self?.applyPositionLock()
+        }
+        modeButton.onPress = { [weak self] in self?.showModeMenu() }
+        for size in FloatingLyricsSize.allCases {
+            let item = NSMenuItem(title: size.title, action: #selector(selectMode(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = size.rawValue
+            modeMenu.addItem(item)
+        }
+        vinyl.onTogglePlayPause = { [weak self] in self?.onTogglePlayPause?() }
+        controls.onPrevious = { [weak self] in self?.onPreviousTrack?() }
+        controls.onToggle = { [weak self] in self?.onTogglePlayPause?() }
+        controls.onNext = { [weak self] in self?.onNextTrack?() }
         canvas.onSeek = { [weak self] in self?.onSeek?($0) }
         applyPreferences()
         restorePosition()
@@ -55,18 +82,41 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
     func resetPlaybackClock() { canvas.resetPlaybackClock() }
 
     func applyPreferences() {
+        let size = AppPreferences.floatingSize
         let oldFrame = panel.frame
-        var frame = NSRect(origin: oldFrame.origin, size: AppPreferences.floatingSize.dimensions)
+        var frame = NSRect(origin: oldFrame.origin, size: size.dimensions)
         frame.origin.y += oldFrame.height - frame.height
         panel.setFrame(frame, display: true)
-        let large = AppPreferences.floatingSize == .large
-        let vinylWidth: CGFloat = large ? 320 : 240
-        vinyl.frame = NSRect(x: 12, y: 58, width: vinylWidth, height: frame.height - 70)
-        title.font = .systemFont(ofSize: large ? 17 : 15, weight: .semibold)
-        artist.font = .systemFont(ofSize: large ? 13 : 12, weight: .medium)
-        title.frame = NSRect(x: 22, y: 32, width: vinylWidth - 20, height: 22)
-        artist.frame = NSRect(x: 22, y: 14, width: vinylWidth - 20, height: 17)
-        canvas.frame = NSRect(x: vinylWidth + 4, y: 14, width: frame.width - vinylWidth - 20, height: frame.height - 28)
+        vinyl.isHidden = size == .minimal
+        controls.isHidden = size != .minimal
+        if size == .minimal {
+            title.alignment = .left
+            artist.alignment = .left
+            title.font = .systemFont(ofSize: 19, weight: .semibold)
+            artist.font = .systemFont(ofSize: 13, weight: .medium)
+            controls.frame = NSRect(x: frame.width - 36 - controls.width, y: frame.height - 75,
+                                    width: controls.width, height: 34)
+            let titleWidth = controls.frame.minX - 36 - 14
+            title.frame = NSRect(x: 36, y: frame.height - 61, width: titleWidth, height: 24)
+            artist.frame = NSRect(x: 36, y: frame.height - 80, width: titleWidth, height: 18)
+            canvas.frame = NSRect(x: 14, y: 14, width: frame.width - 28, height: frame.height - 102)
+        } else {
+            let large = size == .large
+            let vinylWidth: CGFloat = large ? 320 : 240
+            vinyl.frame = NSRect(x: 12, y: 58, width: vinylWidth, height: frame.height - 70)
+            title.alignment = .center
+            artist.alignment = .center
+            title.font = .systemFont(ofSize: large ? 17 : 15, weight: .semibold)
+            artist.font = .systemFont(ofSize: large ? 13 : 12, weight: .medium)
+            title.frame = NSRect(x: 22, y: 32, width: vinylWidth - 20, height: 22)
+            artist.frame = NSRect(x: 22, y: 14, width: vinylWidth - 20, height: 17)
+            canvas.frame = NSRect(x: vinylWidth + 4, y: 14, width: frame.width - vinylWidth - 20, height: frame.height - 28)
+        }
+        for (index, button) in [closeButton, lockButton, modeButton].enumerated() {
+            button.frame = NSRect(x: 10 + CGFloat(index) * 20, y: frame.height - 28, width: 20, height: 23)
+        }
+        applyPositionLock()
+        updateVinyl()
         background.updateOpacity()
         var behavior: NSWindow.CollectionBehavior = [.stationary]
         behavior.insert(AppPreferences.floatingLyricsSpaceBehavior == .allSpaces ? .canJoinAllSpaces : .moveToActiveSpace)
@@ -80,10 +130,39 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
         constrainToScreen()
     }
 
+    private func applyPositionLock() {
+        let locked = AppPreferences.floatingPositionLocked
+        panel.isMovable = !locked
+        panel.isMovableByWindowBackground = !locked
+        lockButton.marked = locked
+        let label = locked ? "解锁窗口位置" : "锁定窗口位置"
+        lockButton.toolTip = label
+        lockButton.setAccessibilityLabel(label)
+    }
+
+    private func showModeMenu() {
+        for item in modeMenu.items {
+            item.state = item.representedObject as? String == AppPreferences.floatingSize.rawValue ? .on : .off
+        }
+        let anchor = NSPoint(x: modeButton.frame.minX, y: modeButton.frame.minY - 4)
+        modeMenu.popUp(positioning: nil, at: anchor, in: background.content)
+    }
+
+    @objc private func selectMode(_ sender: NSMenuItem) {
+        guard let value = sender.representedObject as? String, let size = FloatingLyricsSize(rawValue: value),
+              size != AppPreferences.floatingSize else { return }
+        AppPreferences.floatingSize = size
+        NotificationCenter.default.post(name: AppPreferences.didChange, object: nil)
+    }
+
+    private func updateVinyl() {
+        vinyl.update(playing: currentState == .playing, visible: isVisible && !vinyl.isHidden)
+    }
+
     func setVisible(_ visible: Bool) {
         if visible { panel.orderFrontRegardless() } else { panel.orderOut(nil) }
         canvas.setWindowVisible(visible)
-        vinyl.update(playing: currentState == .playing, visible: visible)
+        updateVinyl()
         onVisibilityChanged?(visible)
     }
 
@@ -93,7 +172,9 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
         artist.stringValue = status.track?.artist ?? ""
         title.toolTip = status.track?.title
         artist.toolTip = status.track?.artist
-        vinyl.update(playing: currentState == .playing, visible: isVisible)
+        vinyl.allowsPlaybackControl = status.track != nil
+        controls.update(status.track)
+        updateVinyl()
         switch status {
         case .showing(let track, let lyrics, _):
             if lyrics.isSynced { canvas.update(track: track, lyrics: lyrics) }
@@ -118,7 +199,9 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
 
     func updateHighlight(for track: TrackInfo, lyrics: LyricsDocument) {
         currentState = track.state
-        vinyl.update(playing: currentState == .playing, visible: isVisible)
+        vinyl.allowsPlaybackControl = true
+        controls.update(track)
+        updateVinyl()
         canvas.update(track: track, lyrics: lyrics)
     }
 
@@ -156,6 +239,50 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
         origin.x = max(area.minX, min(origin.x, area.maxX - panel.frame.width))
         origin.y = max(area.minY, min(origin.y, area.maxY - panel.frame.height))
         panel.setFrameOrigin(origin)
+    }
+}
+
+private final class WindowDotButton: ActionButton {
+    private let color: NSColor
+    private let glyph: NSImage?
+    private var hovered = false
+    var marked = false {
+        didSet { needsDisplay = true }
+    }
+
+    init(color: NSColor, symbol: String, label: String) {
+        self.color = color
+        let style = NSImage.SymbolConfiguration(pointSize: 7, weight: .bold)
+            .applying(.init(paletteColors: [NSColor.black.withAlphaComponent(0.72)]))
+        glyph = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?.withSymbolConfiguration(style)
+        super.init()
+        toolTip = label
+        setAccessibilityLabel(label)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let dot = NSBezierPath(ovalIn: NSRect(x: bounds.midX - 6, y: bounds.midY - 6, width: 12, height: 12))
+        (isHighlighted ? color.blended(withFraction: 0.17, of: .black) ?? color : color).setFill()
+        dot.fill()
+        if hovered || marked, let glyph {
+            let rect = NSRect(x: bounds.midX - glyph.size.width / 2, y: bounds.midY - glyph.size.height / 2,
+                              width: glyph.size.width, height: glyph.size.height)
+            glyph.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+        }
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        hovered = true
+        needsDisplay = true
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        hovered = false
+        needsDisplay = true
     }
 }
 

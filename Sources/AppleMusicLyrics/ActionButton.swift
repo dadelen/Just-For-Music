@@ -1,6 +1,6 @@
 import AppKit
 
-final class ActionButton: NSButton {
+class ActionButton: NSButton {
     var onPress: (() -> Void)?
     private var hoverArea: NSTrackingArea?
 

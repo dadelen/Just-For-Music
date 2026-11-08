@@ -72,7 +72,7 @@ final class PlaybackMonitor {
     }
 
     private func startHelperIfNeeded() {
-        guard helperProcess == nil, let helperURL else { return }
+        guard helperProcess == nil, let helperURL = Self.helperExecutableURL else { return }
 
         let process = Process()
         let input = Pipe()
@@ -163,7 +163,7 @@ final class PlaybackMonitor {
         }
     }
 
-    private var helperURL: URL? {
+    static var helperExecutableURL: URL? {
         let bundled = Bundle.main.bundleURL
             .appendingPathComponent("Contents/Helpers", isDirectory: true)
             .appendingPathComponent(Self.helperName)

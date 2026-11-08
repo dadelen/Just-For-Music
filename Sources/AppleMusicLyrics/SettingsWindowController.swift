@@ -171,9 +171,10 @@ private struct SettingsView: View {
             }
         case "悬浮窗口":
             Section {
-                Picker("窗口尺寸", selection: $size) {
-                    Text("Small").tag("small")
-                    Text("Large").tag("large")
+                Picker("窗口模式", selection: $size) {
+                    ForEach(FloatingLyricsSize.allCases, id: \.rawValue) { mode in
+                        Text(mode.title).tag(mode.rawValue)
+                    }
                 }.pickerStyle(.segmented)
                 Toggle("显示桌面歌词", isOn: $visible)
                 Toggle("显示译文", isOn: $translation)

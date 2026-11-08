@@ -78,21 +78,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.playbackMonitor.sampleNow()
             }
         }
-        menuBar.onPreviousTrack = { [weak self] in
+        let previousTrack: () -> Void = { [weak self] in
             self?.playbackController.previousTrack {
                 self?.playbackMonitor.sampleNow()
             }
         }
-        menuBar.onTogglePlayPause = { [weak self] in
+        menuBar.onPreviousTrack = previousTrack
+        floating.onPreviousTrack = previousTrack
+        let togglePlayPause: () -> Void = { [weak self] in
             self?.playbackController.togglePlayPause {
                 self?.playbackMonitor.sampleNow()
             }
         }
-        menuBar.onNextTrack = { [weak self] in
+        menuBar.onTogglePlayPause = togglePlayPause
+        floating.onTogglePlayPause = togglePlayPause
+        let nextTrack: () -> Void = { [weak self] in
             self?.playbackController.nextTrack {
                 self?.playbackMonitor.sampleNow()
             }
         }
+        menuBar.onNextTrack = nextTrack
+        floating.onNextTrack = nextTrack
         menuBar.onOpenMusic = { [weak self] in
             self?.openMusic()
         }

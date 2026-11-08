@@ -11,10 +11,24 @@ final class VinylPlayerView: NSView {
     private let reflection = CAGradientLayer()
     private let reflectionMask = CAShapeLayer()
     private let arm = CAShapeLayer()
+    private let cartridge = CAShapeLayer()
     private let pivot = CAShapeLayer()
+    private let pivotGlyph = CAShapeLayer()
+    private let tonearmButton = TonearmButton()
+    private var armHitPath: CGPath?
+    private var needleHovered = false
     private var playing = false
     private var visible = false
     private var armEngaged = false
+    var onTogglePlayPause: (() -> Void)?
+    var allowsPlaybackControl = false {
+        didSet {
+            guard oldValue != allowsPlaybackControl else { return }
+            tonearmButton.isEnabled = allowsPlaybackControl
+            if !allowsPlaybackControl { setNeedleHovered(false) }
+            updateNeedleControl()
+        }
+    }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -53,7 +67,7 @@ final class VinylPlayerView: NSView {
         layer?.addSublayer(reflection)
 
         arm.fillColor = nil
-        arm.strokeColor = NSColor.white.cgColor
+        arm.strokeColor = NSColor(white: 0.94, alpha: 1).cgColor
         arm.lineCap = .round
         arm.lineJoin = .round
         arm.anchorPoint = .zero
@@ -62,11 +76,26 @@ final class VinylPlayerView: NSView {
         arm.shadowOpacity = 0.32
         arm.shadowRadius = 2
         arm.shadowOffset = CGSize(width: 0, height: -1)
+        cartridge.fillColor = NSColor(white: 0.98, alpha: 1).cgColor
+        cartridge.strokeColor = NSColor.black.withAlphaComponent(0.18).cgColor
+        cartridge.lineWidth = 0.75
+        arm.addSublayer(cartridge)
         layer?.addSublayer(arm)
-        pivot.fillColor = NSColor.white.cgColor
-        pivot.strokeColor = NSColor.black.withAlphaComponent(0.12).cgColor
-        pivot.lineWidth = 3
+        pivot.strokeColor = NSColor.black.withAlphaComponent(0.17).cgColor
+        pivot.lineWidth = 1
+        pivot.shadowColor = NSColor.black.cgColor
+        pivot.shadowOpacity = 0.28
+        pivot.shadowRadius = 2
+        pivot.shadowOffset = CGSize(width: 0, height: -1)
         layer?.addSublayer(pivot)
+        pivotGlyph.fillColor = NSColor(white: 0.25, alpha: 1).cgColor
+        layer?.addSublayer(pivotGlyph)
+        tonearmButton.isEnabled = false
+        tonearmButton.containsLocation = { [weak self] point in self?.needleContains(point) ?? false }
+        tonearmButton.onHover = { [weak self] hovered in self?.setNeedleHovered(hovered) }
+        tonearmButton.onPress = { [weak self] in self?.onTogglePlayPause?() }
+        addSubview(tonearmButton)
+        updateNeedleControl()
         let rotation = CABasicAnimation(keyPath: "transform.rotation.z")
         rotation.fromValue = 0
         rotation.toValue = -2 * Double.pi
@@ -77,7 +106,7 @@ final class VinylPlayerView: NSView {
         record.add(rotation, forKey: "rotation")
         pauseRotation()
         setArtwork(nil)
-        setAccessibilityRole(.image)
+        setAccessibilityRole(.group)
         setAccessibilityLabel("当前专辑黑胶唱片")
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(updateAnimation), name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
     }
@@ -102,9 +131,48 @@ final class VinylPlayerView: NSView {
     }
 
     func update(playing: Bool, visible: Bool) {
+        let stateChanged = self.playing != playing
         self.playing = playing
         self.visible = visible
+        if !visible { setNeedleHovered(false) }
+        if stateChanged { updateNeedleControl() }
         updateAnimation()
+    }
+
+    private func needleContains(_ point: NSPoint) -> Bool {
+        if hypot(point.x - arm.position.x, point.y - arm.position.y) <= 13 { return true }
+        let displayedArm = arm.presentation() ?? arm
+        let armPoint = displayedArm.convert(point, from: displayedArm.superlayer)
+        return armHitPath?.contains(armPoint) ?? false
+    }
+
+    private func setNeedleHovered(_ hovered: Bool) {
+        guard needleHovered != hovered else { return }
+        needleHovered = hovered
+        updateNeedleControl()
+    }
+
+    private func updateNeedleControl() {
+        let label = playing ? "唱针，暂停" : "唱针，播放"
+        tonearmButton.setAccessibilityLabel(label)
+        tonearmButton.toolTip = needleHovered ? label : nil
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        pivot.fillColor = (needleHovered ? NSColor.white : NSColor(white: 0.90, alpha: 1)).cgColor
+        pivotGlyph.isHidden = !allowsPlaybackControl
+        let point = arm.position
+        let glyph = CGMutablePath()
+        if playing {
+            glyph.addRoundedRect(in: CGRect(x: point.x - 3.2, y: point.y - 3.6, width: 2, height: 7.2), cornerWidth: 0.7, cornerHeight: 0.7)
+            glyph.addRoundedRect(in: CGRect(x: point.x + 1.2, y: point.y - 3.6, width: 2, height: 7.2), cornerWidth: 0.7, cornerHeight: 0.7)
+        } else {
+            glyph.move(to: CGPoint(x: point.x - 2.3, y: point.y - 4))
+            glyph.addLine(to: CGPoint(x: point.x + 4.3, y: point.y))
+            glyph.addLine(to: CGPoint(x: point.x - 2.3, y: point.y + 4))
+            glyph.closeSubpath()
+        }
+        pivotGlyph.path = glyph
+        CATransaction.commit()
     }
 
     @objc private func updateAnimation() {
@@ -146,6 +214,7 @@ final class VinylPlayerView: NSView {
 
     override func layout() {
         super.layout()
+        tonearmButton.frame = bounds
         let diameter = min(bounds.width - 28, (bounds.height - 26) / 1.08)
         guard diameter > 0 else { return }
         let center = CGPoint(x: bounds.midX, y: bounds.midY - diameter * 0.04)
@@ -186,10 +255,71 @@ final class VinylPlayerView: NSView {
         needle.addCurve(to: CGPoint(x: diameter * 0.32, y: -diameter * 0.25),
                         control1: CGPoint(x: diameter * 0.12, y: -diameter * 0.12),
                         control2: CGPoint(x: diameter * 0.21, y: -diameter * 0.23))
-        needle.addLine(to: CGPoint(x: diameter * 0.48, y: -diameter * 0.28))
+        let tip = CGPoint(x: diameter * 0.48, y: -diameter * 0.28)
+        needle.addLine(to: tip)
         arm.path = needle
-        arm.lineWidth = max(3, diameter * 0.019)
-        pivot.path = CGPath(ellipseIn: CGRect(x: pivotPoint.x - 6, y: pivotPoint.y - 6, width: 12, height: 12), transform: nil)
+        arm.lineWidth = max(3.5, diameter * 0.020)
+        arm.shadowPath = needle.copy(strokingWithWidth: arm.lineWidth, lineCap: .round, lineJoin: .round, miterLimit: 1)
+        armHitPath = needle.copy(strokingWithWidth: 24, lineCap: .round, lineJoin: .round, miterLimit: 1)
+        let headWidth = max(13, diameter * 0.08)
+        var headTransform = CGAffineTransform(translationX: tip.x, y: tip.y).rotated(by: -0.185)
+        let head = CGPath(roundedRect: CGRect(x: -headWidth * 0.65, y: -3.5, width: headWidth, height: 7),
+                          cornerWidth: 2, cornerHeight: 2, transform: nil)
+        cartridge.path = head.copy(using: &headTransform)
+        pivot.path = CGPath(ellipseIn: CGRect(x: pivotPoint.x - 9, y: pivotPoint.y - 9, width: 18, height: 18), transform: nil)
+        pivot.shadowPath = pivot.path
+        updateNeedleControl()
         CATransaction.commit()
+    }
+}
+
+private final class TonearmButton: ActionButton {
+    var containsLocation: ((NSPoint) -> Bool)?
+    var onHover: ((Bool) -> Void)?
+    private var moveTracking: NSTrackingArea?
+    private var pressed = false
+
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        // The arm path uses the vinyl view's coordinates.
+        guard isEnabled, containsLocation?(point) == true else { return nil }
+        return super.hitTest(point)
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let moveTracking { removeTrackingArea(moveTracking) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseMoved, .activeAlways, .inVisibleRect], owner: self)
+        addTrackingArea(area)
+        moveTracking = area
+    }
+
+    override func mouseEntered(with event: NSEvent) { mouseMoved(with: event) }
+
+    override func mouseMoved(with event: NSEvent) {
+        let hovered = contains(event)
+        onHover?(hovered)
+        (hovered ? NSCursor.pointingHand : NSCursor.arrow).set()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        onHover?(false)
+        NSCursor.arrow.set()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        pressed = contains(event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        let activate = pressed && contains(event)
+        pressed = false
+        if activate { performClick(nil) }
+    }
+
+    private func contains(_ event: NSEvent) -> Bool {
+        guard isEnabled, let superview else { return false }
+        return containsLocation?(superview.convert(event.locationInWindow, from: nil)) == true
     }
 }

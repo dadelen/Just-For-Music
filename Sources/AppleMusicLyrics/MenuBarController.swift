@@ -4,14 +4,13 @@ import QuartzCore
 final class MenuBarController: NSObject {
     private let statusItem = NSStatusBar.system.statusItem(withLength: 258)
     private let menu = NSMenu()
-    private let statusView = NSView()
+    private let statusView = StatusItemContentView()
     private let lyricButton = ActionButton()
-    private let previousButton = ActionButton()
-    private let playButton = ActionButton()
-    private let nextButton = ActionButton()
+    private let controls = PlaybackControls(buttonWidth: 26)
     private let karaokeTitleView = KaraokeStatusTitleView()
     private let playerView = MenuPlayerView()
     private var viewportWidth: CGFloat = 180
+    private var lastControlState: PlayerState?
     var onSettings: (() -> Void)?
     var onSeek: ((TimeInterval) -> Void)?
     var onPreviousTrack: (() -> Void)?
@@ -80,31 +79,41 @@ final class MenuBarController: NSObject {
     }
 
     private func updateControls(_ track: TrackInfo?) {
-        for control in [previousButton, playButton, nextButton] { control.isEnabled = track != nil }
-        playButton.setSymbol(track?.state == .playing ? "pause.fill" : "play.fill", label: track?.state == .playing ? "暂停" : "播放")
+        guard lastControlState != track?.state else { return }
+        lastControlState = track?.state
+        controls.update(track)
+        statusItem.button?.setAccessibilityCustomActions(controls.accessibilityActions)
     }
 
     private func configureStatusItem() {
         guard let button = statusItem.button else { return }
         button.title = ""
+        button.target = self
+        button.action = #selector(statusButtonClicked(_:))
+        button.sendAction(on: .leftMouseUp)
         statusView.wantsLayer = true
         statusView.layer?.masksToBounds = true
         button.addSubview(statusView)
-        for view in [lyricButton, previousButton, playButton, nextButton] { statusView.addSubview(view) }
+        statusView.addSubview(lyricButton)
+        statusView.addSubview(controls)
         lyricButton.layer?.masksToBounds = true
         lyricButton.addSubview(karaokeTitleView)
-        lyricButton.onPress = { [weak self] in
-            guard let self else { return }
-            self.menu.popUp(positioning: nil, at: NSPoint(x: 0, y: self.statusView.bounds.height + 3), in: self.statusView)
-        }
-        previousButton.setSymbol("backward.fill", label: "上一首")
-        playButton.setSymbol("play.fill", label: "播放")
-        nextButton.setSymbol("forward.fill", label: "下一首")
-        previousButton.onPress = { [weak self] in self?.onPreviousTrack?() }
-        playButton.onPress = { [weak self] in self?.onTogglePlayPause?() }
-        nextButton.onPress = { [weak self] in self?.onNextTrack?() }
+        controls.onPrevious = { [weak self] in self?.onPreviousTrack?() }
+        controls.onToggle = { [weak self] in self?.onTogglePlayPause?() }
+        controls.onNext = { [weak self] in self?.onNextTrack?() }
         NotificationCenter.default.addObserver(self, selector: #selector(reloadAppearance), name: NSApplication.didChangeScreenParametersNotification, object: nil)
         reloadAppearance()
+    }
+
+    @objc private func statusButtonClicked(_ sender: NSStatusBarButton) {
+        if let event = NSApp.currentEvent, event.type == .leftMouseUp || event.type == .leftMouseDown,
+           let window = sender.window {
+            let location = event.window === window
+                ? event.locationInWindow
+                : window.convertPoint(fromScreen: NSEvent.mouseLocation)
+            if controls.activate(at: controls.convert(location, from: nil)) { return }
+        }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: -3), in: statusView)
     }
 
     @objc func reloadAppearance() {
@@ -114,16 +123,15 @@ final class MenuBarController: NSObject {
         viewportWidth = mode == .compact || (mode == .automatic && constrained) ? 112 : 180
         let iconOnly = mode == .icon
         let height = NSStatusBar.system.thickness
-        let width = iconOnly ? height : viewportWidth + 78
+        let width = iconOnly ? height : viewportWidth + controls.width
         statusItem.length = width
         statusView.frame = NSRect(x: 0, y: 0, width: width, height: height)
         lyricButton.frame = NSRect(x: 0, y: 0, width: iconOnly ? width : viewportWidth, height: height)
         karaokeTitleView.frame = lyricButton.bounds
         karaokeTitleView.isHidden = iconOnly || karaokeTitleView.isHidden
-        for (index, control) in [previousButton, playButton, nextButton].enumerated() {
-            control.isHidden = iconOnly
-            control.frame = NSRect(x: viewportWidth + CGFloat(index) * 26, y: 0, width: 26, height: height)
-        }
+        controls.isHidden = iconOnly
+        controls.frame = NSRect(x: viewportWidth, y: 0, width: controls.width, height: height)
+        statusItem.button?.setAccessibilityCustomActions(controls.accessibilityActions)
         if iconOnly { lyricButton.setSymbol("music.note", label: "打开播放器") }
         else {
             lyricButton.image = nil
@@ -138,17 +146,21 @@ final class MenuBarController: NSObject {
         karaokeTitleView.deactivate()
         karaokeTitleView.isHidden = true
         lyricButton.title = AppPreferences.statusBarMode == .icon ? "" : title
-        lyricButton.setAccessibilityLabel("打开播放器，" + title)
+        statusItem.button?.setAccessibilityLabel("打开播放器，" + title)
     }
 
     private func setKaraokeTitle(line: LyricLine, track: TrackInfo) {
         guard AppPreferences.statusBarMode != .icon else { return }
         lyricButton.title = ""
-        lyricButton.setAccessibilityLabel("打开播放器，" + line.text)
+        statusItem.button?.setAccessibilityLabel("打开播放器，" + line.text)
         _ = karaokeTitleView.update(line: line, track: track)
         karaokeTitleView.isHidden = false
     }
 
+}
+
+private final class StatusItemContentView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
 private final class CompactSliderCell: NSSliderCell {

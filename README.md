@@ -11,14 +11,14 @@ The existing read-only Music cache provider, TTML parser and playback monitor re
 - A compact player menu with real artwork, centered track details, transport, seek bar, Settings and Quit.
 - An independent settings window with five categories.
 - A system-glass floating panel: rotating vinyl on the left, original lyrics and smaller translations on the right. No custom background tint.
-- Fixed Small (640 × 260 pt) and Large (880 × 380 pt) presets, window dragging, per-display position memory, Spaces and full-screen support.
-- A softly lit vinyl record that turns once every six seconds and keeps its angle when paused. The track title and artist sit below the record.
+- Red, yellow and green controls close the panel, lock its position and choose Small, Large or Minimal. Minimal mode places the track details and playback controls above the lyrics.
+- A softly lit vinyl record that turns once every six seconds and keeps its angle when paused. Click the tonearm to play or pause.
 - Left-aligned lyrics emphasize the current line and soften nearby lines. Playback follow resumes four seconds after the last manual scroll.
 - Three-dot gap progress driven by real playback time and confirmed lyric boundaries; unknown or sub-1.5-second gaps are not synthesized.
 - Apple on-device translation, language identification, batching, caching and track-switch isolation. Existing Chinese cache translations take priority. Chinese and entire lines mixing Chinese with another language skip machine translation.
 - Configurable GitHub Releases updates with SHA-256 verification. Updates are disabled when no repository is configured.
 
-Removed: lyric exports, old dual floating layouts, locking, click-through, Option-key interaction, global shortcuts and arbitrary resizing.
+Removed: lyric exports, old floating layouts, click-through, Option-key interaction, global shortcuts and arbitrary resizing.
 
 ## Requirements
 

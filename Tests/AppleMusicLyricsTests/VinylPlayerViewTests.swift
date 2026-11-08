@@ -41,4 +41,35 @@ final class VinylPlayerViewTests: XCTestCase {
         view.update(playing: true, visible: false)
         XCTAssertEqual(record.speed, 0)
     }
+
+    func testTonearmActsAsPlaybackButtonWithoutInterceptingRecordCenter() throws {
+        let view = VinylPlayerView(frame: NSRect(x: 0, y: 0, width: 240, height: 190))
+        view.layoutSubtreeIfNeeded()
+        let root = try XCTUnwrap(view.layer)
+        let record = try XCTUnwrap(root.sublayers?.first { $0.animation(forKey: "rotation") != nil })
+        let arm = try XCTUnwrap(root.sublayers?.compactMap { $0 as? CAShapeLayer }.first { $0.lineCap == .round })
+        let tip = arm.convert(try XCTUnwrap(arm.path).currentPoint, to: root)
+
+        XCTAssertTrue(view.hitTest(tip) === view)
+        view.allowsPlaybackControl = true
+        let button = try XCTUnwrap(view.hitTest(tip) as? NSButton)
+        XCTAssertTrue(view.hitTest(arm.position) === button)
+        XCTAssertTrue(view.hitTest(record.position) === view)
+
+        var toggles = 0
+        view.onTogglePlayPause = { toggles += 1 }
+        func mouse(_ type: NSEvent.EventType, at point: NSPoint) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.mouseEvent(with: type, location: view.convert(point, to: nil), modifierFlags: [],
+                                           timestamp: 0, windowNumber: 0, context: nil,
+                                           eventNumber: 0, clickCount: 1, pressure: 1))
+        }
+        button.mouseDown(with: try mouse(.leftMouseDown, at: tip))
+        button.mouseUp(with: try mouse(.leftMouseUp, at: record.position))
+        XCTAssertEqual(toggles, 0)
+        button.mouseDown(with: try mouse(.leftMouseDown, at: tip))
+        button.mouseUp(with: try mouse(.leftMouseUp, at: tip))
+        XCTAssertEqual(toggles, 1)
+        view.update(playing: true, visible: false)
+        XCTAssertEqual(button.accessibilityLabel(), "唱针，暂停")
+    }
 }

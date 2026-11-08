@@ -1,37 +1,49 @@
-import AppKit
 import Foundation
 
 final class MusicPlaybackController {
     private let queue = DispatchQueue(label: "local.applemusiclyrics.playback-control")
 
     func seek(to position: TimeInterval, completion: @escaping () -> Void) {
-        let clamped = max(0, position)
-        execute(
-            """
-            tell application "Music"
-                set player position to \(clamped)
-            end tell
-            """,
-            completion: completion
-        )
+        guard position.isFinite else { completion(); return }
+        execute(["seek", String(max(0, position))], completion: completion)
     }
 
     func previousTrack(completion: @escaping () -> Void) {
-        execute("tell application \"Music\" to previous track", completion: completion)
+        execute(["previous"], completion: completion)
     }
 
     func togglePlayPause(completion: @escaping () -> Void) {
-        execute("tell application \"Music\" to playpause", completion: completion)
+        execute(["toggle"], completion: completion)
     }
 
     func nextTrack(completion: @escaping () -> Void) {
-        execute("tell application \"Music\" to next track", completion: completion)
+        execute(["next"], completion: completion)
     }
 
-    private func execute(_ source: String, completion: @escaping () -> Void) {
+    private func execute(_ command: [String], completion: @escaping () -> Void) {
         queue.async {
-            _ = AppleScriptRunner.run(source)
-            DispatchQueue.main.async(execute: completion)
+            defer { DispatchQueue.main.async(execute: completion) }
+            guard let executable = PlaybackMonitor.helperExecutableURL else {
+                DiagnosticLogger.shared.warning("Playback control helper is unavailable")
+                return
+            }
+            let process = Process()
+            let errors = Pipe()
+            process.executableURL = executable
+            process.arguments = ["--control"] + command
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = errors
+            do {
+                try process.run()
+                let errorData = errors.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
+                if process.terminationStatus != 0 {
+                    let message = String(decoding: errorData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+                    DiagnosticLogger.shared.warning("Playback control \(command[0]) failed: \(message)")
+                }
+            } catch {
+                DiagnosticLogger.shared.warning("Playback control helper failed to start: \(error.localizedDescription)")
+            }
         }
     }
 }

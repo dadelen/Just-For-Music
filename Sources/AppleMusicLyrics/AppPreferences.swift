@@ -14,11 +14,21 @@ enum FloatingLyricsSpaceBehavior: String, CaseIterable {
 }
 
 enum FloatingLyricsSize: String, CaseIterable {
-    case small, large
+    case small, large, minimal
+
+    var title: String {
+        switch self {
+        case .small: return "Small"
+        case .large: return "Large"
+        case .minimal: return "极简"
+        }
+    }
+
     var dimensions: NSSize {
         switch self {
         case .small: return NSSize(width: 640, height: 260)
         case .large: return NSSize(width: 880, height: 380)
+        case .minimal: return NSSize(width: 440, height: 300)
         }
     }
 }
@@ -32,6 +42,10 @@ enum AppPreferences {
     static var floatingSize: FloatingLyricsSize {
         get { enumValue("floatingLyrics.size", default: .small) }
         set { UserDefaults.standard.set(newValue.rawValue, forKey: "floatingLyrics.size") }
+    }
+    static var floatingPositionLocked: Bool {
+        get { UserDefaults.standard.bool(forKey: "floatingLyrics.positionLocked") }
+        set { UserDefaults.standard.set(newValue, forKey: "floatingLyrics.positionLocked") }
     }
     static var statusBarMode: StatusBarMode {
         get { enumValue("statusBar.mode", default: .automatic) }
