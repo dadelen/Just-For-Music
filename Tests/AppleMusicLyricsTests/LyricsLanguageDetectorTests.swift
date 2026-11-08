@@ -31,6 +31,18 @@ final class LyricsLanguageDetectorTests: XCTestCase {
         XCTAssertTrue(LyricsLanguageDetector.groups(for: lyrics).isEmpty)
     }
 
+    func testShortForeignLinesUseSongContextWithoutIncludingChineseOrMixedLines() {
+        let lyrics = document([
+            "We walk together through the quiet city", "I", "Oh", "Stay", "Let go",
+            "我们一起走", "Hello你好", "…", "밤",
+            "The morning light falls softly on the road"
+        ])
+        let groups = Dictionary(uniqueKeysWithValues: LyricsLanguageDetector.groups(for: lyrics).map {
+            ($0.language, Set($0.lines.keys))
+        })
+        XCTAssertEqual(groups, ["en": [0, 1, 2, 3, 4, 9], "ko": [8]])
+    }
+
     func testTranslationCacheRoundTripAndCorruption() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }

@@ -20,6 +20,8 @@ final class ActionButton: NSButton {
 
     required init?(coder: NSCoder) { nil }
 
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
     func setSymbol(_ symbol: String, label: String) {
         image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
         imagePosition = .imageOnly

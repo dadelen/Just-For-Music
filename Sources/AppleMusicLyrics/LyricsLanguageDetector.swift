@@ -20,7 +20,8 @@ enum LyricsLanguageDetector {
     }
 
     static func hasChineseTranslation(_ line: LyricLine) -> Bool {
-        guard let text = line.translation, !text.isEmpty else { return false }
+        guard let text = line.translation,
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
         if let language = line.translationLanguage { return language.lowercased().hasPrefix("zh") }
         return hypothesis(text).map { isChinese($0.0) && $0.1 >= 0.7 } ?? false
     }
@@ -36,15 +37,12 @@ enum LyricsLanguageDetector {
     }
 
     private static func sourceLanguage(for text: String, context: (NLLanguage, Double)?) -> String? {
-        let letters = text.unicodeScalars.filter { CharacterSet.letters.contains($0) }
-        guard letters.count >= 4 else { return nil }
+        guard text.rangeOfCharacter(from: .letters) != nil else { return nil }
         let hasKana = text.range(of: #"[\p{Hiragana}\p{Katakana}]"#, options: .regularExpression) != nil
         let hasLatin = text.range(of: #"\p{Latin}"#, options: .regularExpression) != nil
         let hanRuns = text.matches(of: try! Regex(#"\p{Han}+"#)).map { String($0.output[0].substring ?? "") }
         // Inspect Han runs with the recognizer; Han presence alone does not identify Chinese.
-        let hasOtherLetters = letters.contains { scalar in
-            String(scalar).range(of: #"[\p{Han}\p{Hiragana}\p{Katakana}]"#, options: .regularExpression) == nil
-        }
+        let hasOtherLetters = text.range(of: #"(?=\p{L})[^\p{Han}\p{Hiragana}\p{Katakana}]"#, options: .regularExpression) != nil
         if hasOtherLetters || hasKana {
             for run in hanRuns where run.count >= 4 {
                 if let (language, confidence) = hypothesis(run), isChinese(language), confidence >= 0.85 {
@@ -57,16 +55,24 @@ enum LyricsLanguageDetector {
             return nil
         }
         if hasKana { return NLLanguage.japanese.rawValue }
-        guard let (language, confidence) = hypothesis(text) else { return nil }
-        if isChinese(language) {
-            // Kanji-only Japanese lines need strong whole-song context to disambiguate.
-            if !hasLatin, let (wholeLanguage, wholeConfidence) = context,
-               wholeLanguage == .japanese, wholeConfidence >= 0.9, confidence < 0.85 {
-                return wholeLanguage.rawValue
+        if let (language, confidence) = hypothesis(text) {
+            if isChinese(language) {
+                // Kanji-only Japanese lines need strong whole-song context to disambiguate.
+                if !hasLatin, let (wholeLanguage, wholeConfidence) = context,
+                   wholeLanguage == .japanese, wholeConfidence >= 0.9, confidence < 0.85 {
+                    return wholeLanguage.rawValue
+                }
+                return nil
             }
-            return nil
+            if confidence >= 0.65 { return language.rawValue }
         }
-        guard confidence >= 0.65 else { return nil }
+        // Short interjections often have no reliable per-line language prediction.
+        guard hanRuns.isEmpty, let (language, confidence) = context,
+              confidence >= 0.8, !isChinese(language),
+              let script = Locale.Language(identifier: language.rawValue).script?.identifier else { return nil }
+        let letterScript = script == "Kore" ? "Hangul" : script
+        guard let mismatchedLetter = try? NSRegularExpression(pattern: "(?=\\p{L})[^\\p{\(letterScript)}]"),
+              mismatchedLetter.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) == nil else { return nil }
         return language.rawValue
     }
 }

@@ -18,21 +18,36 @@ final class LocalTranslationIntegrationTests: XCTestCase {
         guard AppPreferences.automaticTranslation else { throw XCTSkip("Automatic translation is disabled") }
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let service = LocalTranslationService(cache: TranslationCache(directory: directory))
+        let cache = TranslationCache(directory: directory)
+        let service = LocalTranslationService(cache: cache)
         let done = expectation(description: "New song translated")
         let first = LyricsDocument(lines: [LyricLine(time: 1, text: "The morning sun shines through the window")], plainText: nil, source: "test", isSynced: true, wordTiming: .none)
-        let second = first.replacing(lines: [LyricLine(time: 2, text: "The quiet garden is full of flowers", confirmedEnd: 5)])
+        let second = first.replacing(lines: [
+            LyricLine(time: 2, text: "The quiet garden is full of flowers", confirmedEnd: 5),
+            LyricLine(time: 5, text: "I"),
+            LyricLine(time: 6, text: "Oh"),
+            LyricLine(time: 7, text: "Stay"),
+            LyricLine(time: 8, text: "Let go"),
+            LyricLine(time: 9, text: "Hello你好"),
+            LyricLine(time: 10, text: "We walk together through the quiet city")
+        ])
+        let currentTrack = TrackInfo(title: "Second", artist: "Test", album: "", duration: 30, position: 0, state: .paused)
+        let key = TranslationCache.key(track: currentTrack, document: second, source: "en",
+                                       target: AppPreferences.translationTarget, quality: AppPreferences.highQualityTranslation)
+        await cache.write([0: "宁静的花园里开满了花"], key: key)
         var statuses: [String] = []
         service.onStatus = { statuses.append($0) }
         service.onResult = { document in
             XCTAssertEqual(document.lines.first?.text, second.lines.first?.text, "Old track must not deliver its result")
             XCTAssertEqual(document.lines.first?.time, 2)
             XCTAssertEqual(document.lines.first?.confirmedEnd, 5)
-            XCTAssertFalse(document.lines.first?.translation?.isEmpty ?? true, statuses.joined(separator: "; "))
+            XCTAssertEqual(document.lines.first?.translation, "宁静的花园里开满了花")
+            XCTAssertEqual(document.lines.filter(\.isMachineTranslation).map(\.time), [2, 5, 6, 7, 8, 10],
+                           statuses.joined(separator: "; "))
             done.fulfill()
         }
         service.start(document: first, track: TrackInfo(title: "First", artist: "Test", album: "", duration: 30, position: 0, state: .paused))
-        service.start(document: second, track: TrackInfo(title: "Second", artist: "Test", album: "", duration: 30, position: 0, state: .paused))
+        service.start(document: second, track: currentTrack)
         await fulfillment(of: [done], timeout: 45)
         service.cancel()
     }

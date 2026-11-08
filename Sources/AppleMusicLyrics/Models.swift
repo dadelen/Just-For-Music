@@ -201,10 +201,10 @@ extension LyricsDocument {
     private static func gap(from start: TimeInterval, to end: TimeInterval) -> LyricLine {
         let step = (end - start) / 3
         let words = (0..<3).map { index in
-            LyricWord(text: "•", start: start + Double(index) * step,
+            LyricWord(text: index < 2 ? "•\u{2009}" : "•", start: start + Double(index) * step,
                       end: start + Double(index + 1) * step)
         }
-        return LyricLine(time: start, text: "•••", words: words, confirmedEnd: end, isGap: true)
+        return LyricLine(time: start, text: words.map(\.text).joined(), words: words, confirmedEnd: end, isGap: true)
     }
 }
 

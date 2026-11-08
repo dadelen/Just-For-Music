@@ -52,7 +52,7 @@ private final class TranslationEngine: ObservableObject {
     private struct PendingBatch {
         let id: UUID
         let requests: [TranslationSession.Request]
-        let continuation: CheckedContinuation<[TranslationSession.Response], Error>
+        let continuation: CheckedContinuation<[String: String], Error>
     }
 
     func cancel() {
@@ -81,10 +81,20 @@ private final class TranslationEngine: ObservableObject {
                 guard !Task.isCancelled, self.generation == token else { return }
                 let key = TranslationCache.key(track: track, document: document, source: group.language,
                                                target: AppPreferences.translationTarget, quality: quality)
-                if let cached = await self.cache.read(key) {
-                    translated.merge(cached) { _, new in new }
-                    continue
+                let cached = await self.cache.read(key) ?? [:]
+                // Reuse cached translations by text, including repeated chorus lines.
+                var byText: [String: String] = [:]
+                var representative: [String: Int] = [:]
+                for index in group.lines.keys.sorted() {
+                    guard let text = group.lines[index] else { continue }
+                    if let translation = cached[index], !translation.isEmpty { byText[text] = translation }
+                    if representative[text] == nil { representative[text] = index }
                 }
+                let requests = representative.sorted { $0.value < $1.value }.compactMap { text, index in
+                    byText[text] == nil ? TranslationSession.Request(sourceText: text, clientIdentifier: String(index)) : nil
+                }
+                for (index, text) in group.lines { translated[index] = byText[text] }
+                guard !requests.isEmpty else { continue }
                 let source = Locale.Language(identifier: group.language)
                 let target = Locale.Language(identifier: AppPreferences.translationTarget)
                 let availability: LanguageAvailability
@@ -98,37 +108,26 @@ private final class TranslationEngine: ObservableObject {
                     unavailable.append("\(group.language) 语言资源待准备，请在设置中下载")
                     continue
                 }
-                // Deduplicate repeated chorus lines within the same language batch.
-                var representative: [String: Int] = [:]
-                for index in group.lines.keys.sorted() {
-                    if let text = group.lines[index], representative[text] == nil { representative[text] = index }
-                }
-                let requests = representative.sorted { $0.value < $1.value }.map {
-                    TranslationSession.Request(sourceText: $0.key, clientIdentifier: String($0.value))
-                }
                 self.onStatus?("正在本地翻译 \(group.language)…")
                 do {
-                    let responses: [TranslationSession.Response]
+                    let newTranslations: [String: String]
                     if #available(macOS 26, *), status == .installed {
                         let session: TranslationSession
                         if #available(macOS 26.4, *) {
                             session = TranslationSession(installedSource: source, target: target, preferredStrategy: quality ? .highFidelity : .lowLatency)
                         } else { session = TranslationSession(installedSource: source, target: target) }
-                        responses = try await session.translations(from: requests)
+                        newTranslations = try await self.translate(requests, using: session)
                     } else {
-                        responses = try await self.translateWithHost(requests: requests, source: source, target: target, quality: quality)
+                        newTranslations = try await self.translateWithHost(requests: requests, source: source, target: target, quality: quality)
                     }
                     guard !Task.isCancelled, self.generation == token else { return }
-                    var byText: [String: String] = [:]
-                    for response in responses {
-                        guard let id = response.clientIdentifier.flatMap(Int.init), let original = group.lines[id],
-                              !response.targetText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
-                        byText[original] = response.targetText
-                    }
+                    byText.merge(newTranslations) { _, new in new }
                     var result: [Int: String] = [:]
                     for (index, text) in group.lines { result[index] = byText[text] }
-                    if result.count == group.lines.count { await self.cache.write(result, key: key) }
+                    if !result.isEmpty { await self.cache.write(result, key: key) }
                     translated.merge(result) { _, new in new }
+                    let remaining = group.lines.count - result.count
+                    if remaining > 0 { unavailable.append("\(group.language) 还有 \(remaining) 句未译出，下次播放时重试") }
                 } catch {
                     guard !Task.isCancelled, self.generation == token else { return }
                     unavailable.append("\(group.language) 翻译暂不可用")
@@ -153,7 +152,7 @@ private final class TranslationEngine: ObservableObject {
     }
 
     private func translateWithHost(requests: [TranslationSession.Request], source: Locale.Language,
-                                   target: Locale.Language, quality: Bool) async throws -> [TranslationSession.Response] {
+                                   target: Locale.Language, quality: Bool) async throws -> [String: String] {
         try await withCheckedThrowingContinuation { continuation in
             pendingID = UUID()
             pending = PendingBatch(id: pendingID, requests: requests, continuation: continuation)
@@ -166,11 +165,42 @@ private final class TranslationEngine: ObservableObject {
         }
     }
 
+    private func translate(_ requests: [TranslationSession.Request], using session: TranslationSession) async throws -> [String: String] {
+        let sources = Dictionary(uniqueKeysWithValues: requests.compactMap { request in
+            request.clientIdentifier.map { ($0, request.sourceText) }
+        })
+        var translations: [String: String] = [:]
+        do {
+            for try await response in session.translate(batch: requests) {
+                guard let id = response.clientIdentifier, let source = sources[id] else { continue }
+                let text = response.targetText.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !text.isEmpty { translations[source] = text }
+            }
+        } catch {
+            try Task.checkCancellation()
+            // Keep the responses delivered before an individual request failed.
+            guard !translations.isEmpty else { throw error }
+            DiagnosticLogger.shared.warning("Local translation batch interrupted: \(error.localizedDescription)")
+        }
+        for request in requests where translations[request.sourceText] == nil {
+            try Task.checkCancellation()
+            do {
+                let response = try await session.translate(request.sourceText)
+                let text = response.targetText.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !text.isEmpty { translations[request.sourceText] = text }
+            } catch {
+                try Task.checkCancellation()
+                DiagnosticLogger.shared.warning("Local translation line retry failed: \(error.localizedDescription)")
+            }
+        }
+        return translations
+    }
+
     func run(session: TranslationSession, id: UUID) async {
         guard let work = pending, work.id == id else { return }
         do {
             try await session.prepareTranslation()
-            let response = try await session.translations(from: work.requests)
+            let response = try await translate(work.requests, using: session)
             guard pending?.id == work.id else { return }
             finishPending(.success(response))
         } catch {
@@ -179,7 +209,7 @@ private final class TranslationEngine: ObservableObject {
         }
     }
 
-    private func finishPending(_ result: Result<[TranslationSession.Response], Error>) {
+    private func finishPending(_ result: Result<[String: String], Error>) {
         let work = pending
         pending = nil
         work?.continuation.resume(with: result)

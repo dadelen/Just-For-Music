@@ -14,7 +14,9 @@ final class LyricsGapTests: XCTestCase {
         XCTAssertEqual(result.lines.filter(\.isGap).map(\.confirmedEnd), [3, 9, 16])
         XCTAssertEqual(result.line(at: 9)?.text, "Second")
         XCTAssertEqual(result.lines.filter { !$0.isGap }, source.lines)
+        XCTAssertEqual(result.lines[0].text, "•\u{2009}•\u{2009}•")
         XCTAssertEqual(result.lines[0].words.map(\.start), [0, 1, 2])
+        XCTAssertEqual(result.lines[0].words.map(\.end), [1, 2, 3])
     }
 
     func testSyntheticEndsAreNotUsedForGapProgress() throws {

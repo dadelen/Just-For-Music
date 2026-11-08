@@ -1,4 +1,5 @@
 import AppKit
+import CoreImage
 import QuartzCore
 import CoreVideo
 
@@ -6,6 +7,7 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
     private let panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
     private let canvas = LyricsCanvasView(frame: .zero)
     private let title = NSTextField(labelWithString: "Apple Music Lyrics")
+    private let artist = NSTextField(labelWithString: "")
     private let background = GlassSurface()
     private let vinyl = VinylPlayerView(frame: .zero)
     private var restoringPosition = true
@@ -25,11 +27,13 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
         panel.isOpaque = false
         panel.delegate = self
         panel.contentView = background
-        title.font = .systemFont(ofSize: 13, weight: .medium)
-        title.textColor = .secondaryLabelColor
-        title.lineBreakMode = .byTruncatingTail
-        background.content.addSubview(title)
         background.content.addSubview(vinyl)
+        for label in [title, artist] {
+            label.alignment = .center
+            label.lineBreakMode = .byTruncatingTail
+            background.content.addSubview(label)
+        }
+        artist.textColor = .secondaryLabelColor
         background.content.addSubview(canvas)
         canvas.onSeek = { [weak self] in self?.onSeek?($0) }
         applyPreferences()
@@ -55,10 +59,14 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
         var frame = NSRect(origin: oldFrame.origin, size: AppPreferences.floatingSize.dimensions)
         frame.origin.y += oldFrame.height - frame.height
         panel.setFrame(frame, display: true)
-        let vinylWidth: CGFloat = AppPreferences.floatingSize == .small ? 240 : 320
-        vinyl.frame = NSRect(x: 12, y: 12, width: vinylWidth, height: frame.height - 24)
-        title.frame = NSRect(x: vinylWidth + 20, y: frame.height - 42, width: frame.width - vinylWidth - 44, height: 20)
-        canvas.frame = NSRect(x: vinylWidth + 4, y: 12, width: frame.width - vinylWidth - 20, height: frame.height - 62)
+        let large = AppPreferences.floatingSize == .large
+        let vinylWidth: CGFloat = large ? 320 : 240
+        vinyl.frame = NSRect(x: 12, y: 58, width: vinylWidth, height: frame.height - 70)
+        title.font = .systemFont(ofSize: large ? 17 : 15, weight: .semibold)
+        artist.font = .systemFont(ofSize: large ? 13 : 12, weight: .medium)
+        title.frame = NSRect(x: 22, y: 32, width: vinylWidth - 20, height: 22)
+        artist.frame = NSRect(x: 22, y: 14, width: vinylWidth - 20, height: 17)
+        canvas.frame = NSRect(x: vinylWidth + 4, y: 14, width: frame.width - vinylWidth - 20, height: frame.height - 28)
         background.updateOpacity()
         var behavior: NSWindow.CollectionBehavior = [.stationary]
         behavior.insert(AppPreferences.floatingLyricsSpaceBehavior == .allSpaces ? .canJoinAllSpaces : .moveToActiveSpace)
@@ -81,22 +89,22 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
 
     func apply(status: AppStatus) {
         currentState = status.track?.state ?? .stopped
+        title.stringValue = status.track?.title ?? "Apple Music Lyrics"
+        artist.stringValue = status.track?.artist ?? ""
+        title.toolTip = status.track?.title
+        artist.toolTip = status.track?.artist
         vinyl.update(playing: currentState == .playing, visible: isVisible)
         switch status {
         case .showing(let track, let lyrics, _):
-            title.stringValue = track.displayName
             if lyrics.isSynced { canvas.update(track: track, lyrics: lyrics) }
             else { canvas.showPlainText(lyrics.plainText ?? "") }
-        case .loadingLyrics(let track):
-            title.stringValue = track.displayName
+        case .loadingLyrics:
             canvas.showMessage("正在读取歌词…")
-        case .noLyrics(let track):
-            title.stringValue = track.displayName
+        case .noLyrics:
             canvas.showMessage("打开音乐 App 的歌词以载入缓存")
         case .error(let message):
             canvas.showMessage(message)
         case .idle, .musicNotRunning, .stopped:
-            title.stringValue = "Apple Music Lyrics"
             canvas.showMessage("播放音乐，让歌词流动")
         }
     }
@@ -162,8 +170,7 @@ private final class LyricsCanvasView: NSView {
         static let lineSpringMass: CGFloat = 1
         static let lineSpringStiffness: CGFloat = 140
         static let lineSpringDamping: CGFloat = 24
-        static let lineScrollHeadstart: TimeInterval = 0.5
-        static let manualScrollFollowDelay: TimeInterval = 3
+        static let manualScrollFollowDelay: TimeInterval = 4
         static let lineTapProgressFreezeDuration: TimeInterval = 0.55
         static let featherWidth: CGFloat = 10
         static let animationHeadstart: TimeInterval = 0
@@ -187,13 +194,7 @@ private final class LyricsCanvasView: NSView {
     }
 
     private var activeFont: NSFont {
-        .systemFont(ofSize: 19 * typographyScale, weight: .semibold)
-    }
-
-    // The lyric container flips its sublayer geometry, so the content-space
-    // ratio is the inverse of the desired visual position.
-    private var scrollFocusRatio: CGFloat {
-        0.50
+        .systemFont(ofSize: 23 * typographyScale, weight: .bold)
     }
 
     private var visibleLineRadius: Int {
@@ -231,6 +232,7 @@ private final class LyricsCanvasView: NSView {
     private var isManualScrolling = false
     private var autoFollowResumeDeadline: CFTimeInterval = 0
     private var manualScrollEndWorkItem: DispatchWorkItem?
+    private var manualScrollResumeWorkItem: DispatchWorkItem?
     private var frozenPosition: TimeInterval?
     private var frozenPositionDeadline: CFTimeInterval = 0
     private var pendingLyricClick: PendingLyricClick?
@@ -260,6 +262,7 @@ private final class LyricsCanvasView: NSView {
 
     deinit {
         manualScrollEndWorkItem?.cancel()
+        manualScrollResumeWorkItem?.cancel()
         displayLink.stop()
     }
 
@@ -267,6 +270,7 @@ private final class LyricsCanvasView: NSView {
 
     private func setup() {
         wantsLayer = true
+        layerUsesCoreImageFilters = true
         lyricsLayer.isGeometryFlipped = true
         layer?.addSublayer(lyricsLayer)
         edgeMask.colors = [
@@ -317,7 +321,6 @@ private final class LyricsCanvasView: NSView {
             // The next playback update performs it.
             geometryWidth = 0
             geometryScale = 0
-            geometryLinesID = []
         }
     }
 
@@ -378,7 +381,6 @@ private final class LyricsCanvasView: NSView {
     func invalidateGeometry() {
         geometryWidth = 0
         geometryScale = 0
-        geometryLinesID = []
         rebuildLayersIfNeeded()
         updateLayerPresentation(animateLineChange: false)
         needsDisplay = true
@@ -423,6 +425,11 @@ private final class LyricsCanvasView: NSView {
                 || abs(geometryScale - scale) > 0.01
                 || geometryLinesID != ids else { return }
 
+        // Translations can arrive while the user is reading another part of the song.
+        let browsedRow = geometryLinesID == ids ? browsingIndex : nil
+        let browseOffset = browsedRow.map { index in
+            (lyricsLayer.presentation()?.bounds.origin.y ?? lyricsLayer.bounds.origin.y) - scrollTarget(for: index)
+        }
         geometryWidth = layoutSize.width
         geometryScale = scale
         geometryLinesID = ids
@@ -430,7 +437,7 @@ private final class LyricsCanvasView: NSView {
         var cursor: CGFloat = 0
         lineCenters = []
         lineHeights = []
-        clearKaraokeLayers()
+        clearKaraokeLayers(preservingBrowse: browsedRow != nil)
 
         for (index, line) in lines.enumerated() {
             let fallbackEnd = index + 1 < lines.count
@@ -445,7 +452,7 @@ private final class LyricsCanvasView: NSView {
                 contentsScale: window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2,
                 featherWidth: AnimationSpec.featherWidth * scale
             )
-            let height = max(34 * scale, lineLayer.textHeight + 12 * scale)
+            let height = max(40 * scale, lineLayer.textHeight + 18 * scale)
             lineHeights.append(height)
             lineCenters.append(cursor + height / 2)
             lineLayer.bounds = CGRect(x: 0, y: 0, width: width, height: lineLayer.textHeight)
@@ -463,6 +470,10 @@ private final class LyricsCanvasView: NSView {
             let mirroredCenter = contentHeight - lineCenters[index]
             lineCenters[index] = mirroredCenter
             karaokeLayers[index].position.y = mirroredCenter
+        }
+        if let browsedRow, let browseOffset {
+            setScrollPosition(scrollTarget(for: browsedRow) + browseOffset)
+            isScrollStateInitialized = true
         }
         lyricsLayer.isHidden = lines.isEmpty
     }
@@ -527,7 +538,7 @@ private final class LyricsCanvasView: NSView {
         isPlaying = false
         frozenPosition = nil
         frozenPositionDeadline = 0
-        isManualScrolling = false
+        cancelManualScroll()
         autoFollowResumeDeadline = 0
     }
 
@@ -596,21 +607,16 @@ private final class LyricsCanvasView: NSView {
         activeIndex = resolvedIndex
         guard resolvedIndex < karaokeLayers.count else { return }
         var needsLineStateUpdate = lineChanged || visualActiveIndex != resolvedIndex
-        let anticipatedIndex = lineIndex(
-            at: position + AnimationSpec.lineScrollHeadstart
-        ) ?? resolvedIndex
-        let scrollIndex = min(resolvedIndex + 1, anticipatedIndex)
         let shouldResumeAutoFollow = !isManualScrolling
             && autoFollowResumeDeadline > 0
             && frameTime >= autoFollowResumeDeadline
         if shouldResumeAutoFollow {
             autoFollowResumeDeadline = 0
-            browsingIndex = nil
             visualScrollIndex = nil
             needsLineStateUpdate = true
         }
-        let autoFollowSuppressed = isManualScrolling || autoFollowResumeDeadline > frameTime
-        let needsScrollUpdate = visualScrollIndex != scrollIndex
+        let autoFollowSuppressed = browsingIndex != nil || autoFollowResumeDeadline > frameTime
+        let needsScrollUpdate = visualScrollIndex != resolvedIndex
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -633,11 +639,11 @@ private final class LyricsCanvasView: NSView {
             }
         }
         if !autoFollowSuppressed && (needsScrollUpdate || !animateLineChange) {
-            visualScrollIndex = scrollIndex
+            visualScrollIndex = resolvedIndex
             let isContinuousAdvance = previousIndex == nil
                 || abs((previousIndex ?? resolvedIndex) - resolvedIndex) <= 1
             scroll(
-                to: scrollIndex,
+                to: resolvedIndex,
                 animated: animateLineChange && isContinuousAdvance
             )
         }
@@ -653,6 +659,8 @@ private final class LyricsCanvasView: NSView {
         visualActiveIndex = activeIndex
         let visibilityCenter = browsingIndex ?? activeIndex
         let visibleRadius = visibleLineRadius
+        let increasedContrast = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
+        let browsing = browsingIndex != nil
 
         for index in karaokeLayers.indices {
             let lineLayer = karaokeLayers[index]
@@ -665,12 +673,13 @@ private final class LyricsCanvasView: NSView {
             if index == activeIndex {
                 opacity = 1
             } else {
-                opacity = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
-                    ? 0.85 : max(0.10, 0.68 - Float(viewportDistance) * 0.10)
+                opacity = increasedContrast || browsing
+                    ? 0.85 : max(0.16, 0.76 - Float(viewportDistance) * 0.13)
             }
             lineLayer.setVisualState(
                 opacity: opacity,
                 scale: 1,
+                softened: index != activeIndex && !increasedContrast && !browsing,
                 hidden: viewportDistance > visibleRadius,
                 animated: animated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
                 duration: AnimationSpec.lineStateDuration
@@ -678,8 +687,16 @@ private final class LyricsCanvasView: NSView {
         }
     }
 
+    private func scrollTarget(for index: Int) -> CGFloat {
+        // Center the active line above the midpoint, with room for wrapped text.
+        let inset = 10 * typographyScale
+        let halfHeight = karaokeLayers[index].textHeight / 2
+        let visualCenter = max(inset + halfHeight, min(bounds.height * 0.36, bounds.height - inset - halfHeight))
+        return lineCenters[index] - bounds.height + visualCenter
+    }
+
     private func scroll(to index: Int, animated: Bool) {
-        let target = lineCenters[index] - bounds.height * scrollFocusRatio
+        let target = scrollTarget(for: index)
         if !isScrollStateInitialized {
             isScrollStateInitialized = true
             setScrollPosition(target)
@@ -688,7 +705,6 @@ private final class LyricsCanvasView: NSView {
 
         guard animated,
               AppPreferences.smoothScrolling,
-              isPlaying,
               !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
             lyricsLayer.removeAnimation(forKey: "lineScroll")
             setScrollPosition(target)
@@ -715,18 +731,15 @@ private final class LyricsCanvasView: NSView {
         lyricsLayer.bounds = newBounds
     }
 
-    private func clearKaraokeLayers() {
+    private func clearKaraokeLayers(preservingBrowse: Bool = false) {
         karaokeLayers.forEach { $0.removeFromSuperlayer() }
         karaokeLayers = []
         visualActiveIndex = nil
         visualScrollIndex = nil
         lyricsLayer.removeAnimation(forKey: "lineScroll")
-        browsingIndex = nil
-        isManualScrolling = false
+        if !preservingBrowse { cancelManualScroll() }
         pendingLyricClick = nil
         autoFollowResumeDeadline = 0
-        manualScrollEndWorkItem?.cancel()
-        manualScrollEndWorkItem = nil
         isScrollStateInitialized = false
         lyricsLayer.isHidden = true
     }
@@ -758,14 +771,13 @@ private final class LyricsCanvasView: NSView {
         lyricsLayer.removeAnimation(forKey: "lineScroll")
         let multiplier: CGFloat = event.hasPreciseScrollingDeltas ? 1 : 12
         let proposed = current + event.scrollingDeltaY * multiplier
-        let targets = lineCenters.map { $0 - bounds.height * scrollFocusRatio }
+        let targets = lineCenters.indices.map { scrollTarget(for: $0) }
         guard let minimum = targets.min(), let maximum = targets.max() else { return }
         let position = min(maximum, max(minimum, proposed))
 
         isScrollStateInitialized = true
         isManualScrolling = true
-        autoFollowResumeDeadline = CACurrentMediaTime()
-            + AnimationSpec.manualScrollFollowDelay
+        autoFollowResumeDeadline = 0
         setScrollPosition(position)
         browsingIndex = nearestLineIndex(toScrollPosition: position)
         visualScrollIndex = nil
@@ -784,6 +796,26 @@ private final class LyricsCanvasView: NSView {
         manualScrollEndWorkItem = workItem
         let delay: TimeInterval = event.momentumPhase == .ended ? 0.04 : 0.16
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+
+        manualScrollResumeWorkItem?.cancel()
+        let resume = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.cancelManualScroll()
+            self.visualActiveIndex = nil
+            self.visualScrollIndex = nil
+            self.updateLayerPresentation()
+        }
+        manualScrollResumeWorkItem = resume
+        DispatchQueue.main.asyncAfter(deadline: .now() + AnimationSpec.manualScrollFollowDelay, execute: resume)
+    }
+
+    private func cancelManualScroll() {
+        browsingIndex = nil
+        isManualScrolling = false
+        manualScrollEndWorkItem?.cancel()
+        manualScrollEndWorkItem = nil
+        manualScrollResumeWorkItem?.cancel()
+        manualScrollResumeWorkItem = nil
     }
 
     private func finishManualScroll() {
@@ -794,8 +826,6 @@ private final class LyricsCanvasView: NSView {
             ?? lyricsLayer.bounds.origin.y
         guard let index = nearestLineIndex(toScrollPosition: visiblePosition) else { return }
         browsingIndex = index
-        autoFollowResumeDeadline = CACurrentMediaTime()
-            + AnimationSpec.manualScrollFollowDelay
         scroll(to: index, animated: true)
         if let activeIndex {
             updateLineStates(activeIndex: activeIndex, animated: true)
@@ -804,9 +834,8 @@ private final class LyricsCanvasView: NSView {
 
     private func nearestLineIndex(toScrollPosition position: CGFloat) -> Int? {
         guard !lineCenters.isEmpty else { return nil }
-        let contentFocus = position + bounds.height * scrollFocusRatio
         return lineCenters.indices.min {
-            abs(lineCenters[$0] - contentFocus) < abs(lineCenters[$1] - contentFocus)
+            abs(scrollTarget(for: $0) - position) < abs(scrollTarget(for: $1) - position)
         }
     }
 
@@ -880,8 +909,7 @@ private final class LyricsCanvasView: NSView {
         frozenPositionDeadline = now + AnimationSpec.lineTapProgressFreezeDuration
         basePosition = target
         sampledAt = now
-        browsingIndex = nil
-        isManualScrolling = false
+        cancelManualScroll()
         autoFollowResumeDeadline = frozenPositionDeadline
         visualScrollIndex = nil
         scroll(to: selectedIndex, animated: true)
@@ -1038,9 +1066,9 @@ private final class KaraokeTextLayer: NoImplicitAnimationLayer {
     init(text: String, font: NSFont, color: NSColor, width: CGFloat, scale: CGFloat) {
         textLayoutManager = NSLayoutManager()
         let paragraph = NSMutableParagraphStyle()
-        paragraph.alignment = .center
+        paragraph.alignment = .left
         paragraph.lineBreakMode = .byWordWrapping
-        paragraph.lineSpacing = 1
+        paragraph.lineSpacing = 2
         storage = NSTextStorage(
             string: text.isEmpty ? "·" : text,
             attributes: [
@@ -1341,6 +1369,7 @@ private final class KaraokeLineLayer: NoImplicitAnimationLayer {
     private var timedUnits: [TimedUnit] = []
     private var baseOpacity: Float = 1
     private var isHovered = false
+    private var softensText = false
 
     let textHeight: CGFloat
 
@@ -1357,7 +1386,7 @@ private final class KaraokeLineLayer: NoImplicitAnimationLayer {
         upcomingLayer = KaraokeTextLayer(
             text: text,
             font: font,
-            color: NSColor.labelColor.withAlphaComponent(NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast ? 0.65 : 0.30),
+            color: NSColor.labelColor.withAlphaComponent(NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast ? 0.75 : 0.52),
             width: width,
             scale: contentsScale
         )
@@ -1524,6 +1553,7 @@ private final class KaraokeLineLayer: NoImplicitAnimationLayer {
         timedUnits = source.timedUnits
         baseOpacity = source.baseOpacity
         isHovered = source.isHovered
+        softensText = source.softensText
         textHeight = source.textHeight
         super.init(layer: layer)
     }
@@ -1559,7 +1589,17 @@ private final class KaraokeLineLayer: NoImplicitAnimationLayer {
     func setHovered(_ hovered: Bool) {
         guard isHovered != hovered else { return }
         isHovered = hovered
+        updateSoftening()
         animateOpacity(to: effectiveOpacity, duration: hovered ? 0.20 : 0.25)
+    }
+
+    private func updateSoftening() {
+        let shouldBlur = softensText && !isHovered && !isHidden
+        let hasBlur = !(filters?.isEmpty ?? true)
+        guard shouldBlur != hasBlur else { return }
+        filters = shouldBlur
+            ? CIFilter(name: "CIGaussianBlur", parameters: [kCIInputRadiusKey: 1.1]).map { [$0] }
+            : nil
     }
 
     private var effectiveOpacity: Float {
@@ -1582,19 +1622,23 @@ private final class KaraokeLineLayer: NoImplicitAnimationLayer {
     func setVisualState(
         opacity: Float,
         scale: CGFloat,
+        softened: Bool,
         hidden: Bool,
         animated: Bool,
         duration: CFTimeInterval
     ) {
         baseOpacity = opacity
+        softensText = softened
         let targetOpacity = isHovered && !hidden ? max(baseOpacity, 0.92) : baseOpacity
         let targetTransform = CATransform3DMakeScale(scale, scale, 1)
         if isHidden == hidden,
            abs(self.opacity - targetOpacity) < 0.001,
            CATransform3DEqualToTransform(transform, targetTransform) {
+            updateSoftening()
             return
         }
         isHidden = hidden
+        updateSoftening()
         let oldOpacity = presentation()?.opacity ?? self.opacity
         let oldTransform = presentation()?.transform ?? transform
         self.opacity = targetOpacity
