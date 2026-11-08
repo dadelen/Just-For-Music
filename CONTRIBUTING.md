@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for contributing to Apple Music Lyrics.
+Thanks for contributing to Just-For-Music.
 
 ## Development Setup
 
@@ -45,9 +45,8 @@ The regular suite includes deterministic language, cache, gap-boundary and vinyl
   before macOS can show the permission prompt.
 - Do not commit `.build`, `dist`, app bundles, local cache data, or copyrighted lyrics.
 - Document behavior that depends on a private Apple format.
-- For V2 automatic translation, skip any lyric line that mixes Chinese and
-  another language. Fully foreign-language lines in the same song can still
-  qualify for translation.
+- Only start automatic translation for songs clearly dominated by foreign
+  lyrics. Skip lines that mix Chinese with another language.
 
 ## Test Fixtures
 
@@ -57,11 +56,10 @@ structure necessary to reproduce a parser or matching issue.
 
 ## Releases
 
-Configure the repository variable `BUNDLE_IDENTIFIER` with your own reverse-DNS identifier.
-The workflow embeds `github.repository` as its update source; local builds leave updates disabled
-unless `UPDATE_REPOSITORY=owner/repository` is explicitly supplied. The local preview identifier
-is `local.applemusiclyrics.v2`, different from upstream. Never publish without configuring your own identity.
+Local builds use `io.github.dadelen.just-for-music` and `dadelen/Just-For-Music` by default.
+Fork maintainers can override `BUNDLE_IDENTIFIER` and `UPDATE_REPOSITORY` for local builds.
+The workflow uses `github.repository` as its update source and accepts a `BUNDLE_IDENTIFIER` repository variable.
 
-Maintainers publish releases with annotated tags in `vMAJOR.MINOR.PATCH` form.
+The initial `v1.0` tag is a source release. Use `vMAJOR.MINOR.PATCH` tags for installer releases.
 The tag workflow runs tests and uploads arm64 ZIP and DMG artifacts. Do not
 manually commit generated files from `dist/`.

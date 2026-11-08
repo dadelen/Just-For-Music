@@ -8,16 +8,43 @@ final class LyricsLanguageDetectorTests: XCTestCase {
     }
 
     func testChineseAndMixedLinesAreSkippedWhileEnglishLinesRemain() {
-        let lyrics = document(["今天我们一起走过这条街", "今天我們一起走過這條街", "今晚陪你一起 walking under the stars", "We walk together through the quiet city", "The morning light falls softly on the road"])
+        let lyrics = document([
+            "今天我们一起走过这条街", "今天我們一起走過這條街", "今晚陪你一起 walking under the stars",
+            "We walk together through the quiet city", "The morning light falls softly on the road",
+            "I remember all the lights along the avenue", "The stars are fading in the early morning sky"
+        ])
         let groups = LyricsLanguageDetector.groups(for: lyrics)
-        XCTAssertEqual(Set(groups.flatMap { $0.lines.keys }), [3, 4])
+        XCTAssertEqual(Set(groups.flatMap { $0.lines.keys }), [3, 4, 5, 6])
         XCTAssertEqual(Set(groups.map(\.language)), ["en"])
+    }
+
+    func testEnglishLinesInMainlyChineseLyricsAreSkipped() {
+        let lyrics = document([
+            "夜深的时候我独自走在回家的路上",
+            "想起从前我们并肩看过的那些风景",
+            "I keep walking down this empty road and wonder where the morning light will take me",
+            "後來才明白有些故事只能留在心裡",
+            "We could sing together until the sun rises above the mountains and the city wakes again",
+            "明天的太阳还会照亮熟悉的窗台",
+            "我把想说的话写进这首歌里"
+        ])
+        XCTAssertTrue(LyricsLanguageDetector.groups(for: lyrics).isEmpty)
     }
 
     func testJapaneseWithKanjiIsNotClassifiedAsChineseByScriptAlone() {
         let lyrics = document(["君と歩いたこの道をいつまでも覚えている", "夜の街を静かに歩いていた"])
         XCTAssertEqual(LyricsLanguageDetector.groups(for: lyrics).first?.language, "ja")
         XCTAssertEqual(LyricsLanguageDetector.groups(for: lyrics).first?.lines.count, 2)
+    }
+
+    func testShortHanLyricsAreUncertainUnlessTheSourceDeclaresJapanese() {
+        let lyrics = document(["未来", "夜空"])
+        XCTAssertEqual(LyricsLanguageDetector.songLanguage(for: lyrics), .uncertain)
+        XCTAssertTrue(LyricsLanguageDetector.groups(for: lyrics).isEmpty)
+
+        let tagged = LyricsDocument(lines: lyrics.lines, plainText: nil, source: "test", isSynced: true,
+                                    wordTiming: .none, sourceLanguage: "ja-JP")
+        XCTAssertEqual(LyricsLanguageDetector.songLanguage(for: tagged), .foreign)
     }
 
     func testExistingChineseTranslationAndPunctuationAreSkipped() {

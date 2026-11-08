@@ -285,6 +285,40 @@ final class AppleMusicCacheLyricsProviderTests: XCTestCase {
         XCTAssertEqual(line?.transliteration, "genbun")
     }
 
+    func testUsesEmbeddedAppleChineseSubtitlesByLineKey() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let dataDirectory = root.appendingPathComponent("fsCachedData")
+        try FileManager.default.createDirectory(at: dataDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let original = """
+        <tt xmlns="http://www.w3.org/ns/ttml" xmlns:itunes="http://music.apple.com/lyric-ttml-internal">
+          <head><metadata><iTunesMetadata xmlns="http://music.apple.com/lyric-ttml-internal">
+            <translations>
+              <translation type="replacement" xml:lang="zh-Hans"><text for="L2">字形替换</text></translation>
+              <translation type="subtitle" xml:lang="zh-Hans"><text for="L1">夜晚依旧明亮</text></translation>
+            </translations>
+          </iTunesMetadata></metadata></head>
+          <body><div>
+            <p begin="1s" end="2s" itunes:key="L1"><span begin="1s" end="2s">The night is still bright</span></p>
+            <p begin="2s" end="3s" itunes:key="L2">We can hear the ocean</p>
+          </div></body>
+        </tt>
+        """
+        let response = try cachedResponse(title: "Subtitle Song", artist: "Subtitle Artist", localizations: [
+            "en-US": original,
+            "fr-Translation": ttmlLine("La nuit est toujours claire", begin: 1, end: 2)
+        ])
+        try response.write(to: dataDirectory.appendingPathComponent(UUID().uuidString))
+
+        let track = TrackInfo(title: "Subtitle Song", artist: "Subtitle Artist", album: "Test Album",
+                              duration: 180, position: 1.5, state: .playing)
+        let document = AppleMusicCacheLyricsProvider(cacheDirectory: root, preferredLanguages: ["en-US"]).lyrics(for: track)
+        XCTAssertEqual(document.lines.map(\.translation), ["夜晚依旧明亮", nil])
+        XCTAssertEqual(document.lines.first?.translationLanguage, "zh-Hans")
+        XCTAssertEqual(LyricsLanguageDetector.groups(for: document).flatMap { $0.lines.keys }.sorted(), [1])
+    }
+
     func testPrefersSimplifiedChineseLocalizationForHansLocale() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -383,6 +417,23 @@ final class AppleMusicCacheLyricsProviderTests: XCTestCase {
         ).lyrics(for: track)
 
         XCTAssertEqual(document.lines.first?.text, "繁体歌词")
+    }
+
+    func testUsesLanguageTagInsideSelectedLocalization() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let dataDirectory = root.appendingPathComponent("fsCachedData", isDirectory: true)
+        try FileManager.default.createDirectory(at: dataDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ttml = #"<tt xml:lang="ja-JP"><body><div><p begin="1s" end="2s">夜空</p></div></body></tt>"#
+        let response = try cachedResponse(title: "Tagged Song", artist: "Tagged Artist", localizations: ["default": ttml])
+        try response.write(to: dataDirectory.appendingPathComponent(UUID().uuidString))
+        let track = TrackInfo(title: "Tagged Song", artist: "Tagged Artist", album: "Test Album",
+                              duration: 180, position: 1.5, state: .playing)
+
+        let document = AppleMusicCacheLyricsProvider(cacheDirectory: root).lyrics(for: track)
+        XCTAssertEqual(document.sourceLanguage, "ja-JP")
+        XCTAssertEqual(LyricsLanguageDetector.songLanguage(for: document), .foreign)
     }
 
     private func cachedResponse(

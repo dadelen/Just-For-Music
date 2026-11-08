@@ -9,8 +9,18 @@ actor TranslationCache {
     }
 
     nonisolated static func key(track: TrackInfo, document: LyricsDocument, source: String, target: String, quality: Bool) -> String {
-        let components = ["v1", track.identityKey, track.album, source, target, String(quality)]
-            + document.lines.map { "\($0.time)|\($0.text)" }
+        makeKey(prefix: ["v1", track.identityKey, track.album, source, target, String(quality)], document: document)
+    }
+
+    nonisolated static func onlineKey(track: TrackInfo, document: LyricsDocument, endpoint: URL, model: String,
+                                      credentialID: UUID? = nil) -> String {
+        var prefix = ["online-v1", track.identityKey, track.album, endpoint.absoluteString, model, "zh-Hans"]
+        if let credentialID { prefix.append(credentialID.uuidString) }
+        return makeKey(prefix: prefix, document: document)
+    }
+
+    private nonisolated static func makeKey(prefix: [String], document: LyricsDocument) -> String {
+        let components = prefix + document.lines.map { "\($0.time)|\($0.text)" }
         let data = (try? JSONEncoder().encode(components)) ?? Data()
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
@@ -27,5 +37,16 @@ actor TranslationCache {
         } catch {
             DiagnosticLogger.shared.warning("Translation cache write failed: \(error.localizedDescription)")
         }
+    }
+}
+
+extension LyricsDocument {
+    func applyingMachineTranslations(_ translations: [Int: String]) -> LyricsDocument {
+        replacing(lines: lines.enumerated().map { index, line in
+            guard !line.hasPreferredOriginalTranslation, let translation = translations[index] else { return line }
+            return LyricLine(time: line.time, text: line.text, words: line.words, translation: translation,
+                             transliteration: line.transliteration, confirmedEnd: line.confirmedEnd,
+                             translationLanguage: "zh-Hans", isGap: line.isGap, isMachineTranslation: true)
+        })
     }
 }

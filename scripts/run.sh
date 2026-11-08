@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 "$ROOT/scripts/check-build-sdk.sh"
 
-echo "→ Building AppleMusicLyrics…"
+echo "→ Building Just-For-Music…"
 BUILD_ARGS=(-c release --arch arm64)
 swift build "${BUILD_ARGS[@]}"
 

@@ -1,24 +1,27 @@
-# Apple Music Lyrics · V2
+# Just-For-Music
 
 English | [简体中文](README.zh-CN.md)
 
-A local fork of [Takpap/apple-music-lyrics](https://github.com/Takpap/apple-music-lyrics).
-The upstream MIT license, copyright and contributor attribution are preserved. This is an unofficial project, not affiliated with Apple.
+<img src="Resources/AppIcon.png" alt="Just-For-Music logo" width="128">
 
-The existing read-only Music cache provider, TTML parser and playback monitor remain the core. V2 adds:
+A macOS menu bar companion for Apple Music with synced lyrics, playback controls, and a floating lyrics window. The first public source release is [Just-For-Music 1.0](https://github.com/dadelen/Just-For-Music/releases/tag/v1.0).
 
-- A single status item with scrolling original karaoke lyrics and three independent playback buttons.
-- A compact player menu with real artwork, centered track details, transport, seek bar, Settings and Quit.
-- An independent settings window with five categories.
+The existing read-only Music cache provider, TTML parser and playback monitor remain the core.
+
+- Automatic and Icon Only status bar modes. Automatic shows scrolling original karaoke lyrics and three native status bar playback buttons.
+- While floating lyrics are visible, only the three playback buttons appear in the status bar. Option-click a playback button to open the player panel.
+- A rounded player panel with real artwork, track details and a seek bar. Its text buttons open Lyrics and Settings or quit the app.
+- An independent settings window for Desktop Lyrics, Menu Bar, Lyric Effects, Translation, and Maintenance.
 - A system-glass floating panel: rotating vinyl on the left, original lyrics and smaller translations on the right. No custom background tint.
-- Red, yellow and green controls close the panel, lock its position and choose Small, Large or Minimal. Minimal mode places the track details and playback controls above the lyrics.
-- A softly lit vinyl record that turns once every six seconds and keeps its angle when paused. Click the tonearm to play or pause.
+- Red, yellow and green controls close the panel, lock its position and choose Vinyl or Minimal. Drag the unlocked Vinyl panel's edges or corners to resize it between 640 × 260 and 880 × 380 pt. Minimal mode places the track details and playback controls above the lyrics.
+- When locked, the window buttons and tonearm control stay interactive while the rest of the panel passes clicks through. Click the yellow button to unlock.
+- A softly lit vinyl record that turns once every 12 beats, or every six seconds when BPM is unavailable. The record keeps its angle when paused. Click the tonearm to play or pause.
 - Left-aligned lyrics emphasize the current line and soften nearby lines. Playback follow resumes four seconds after the last manual scroll.
 - Three-dot gap progress driven by real playback time and confirmed lyric boundaries; unknown or sub-1.5-second gaps are not synthesized.
-- Apple on-device translation, language identification, batching, caching and track-switch isolation. Existing Chinese cache translations take priority. Chinese and entire lines mixing Chinese with another language skip machine translation.
-- Configurable GitHub Releases updates with SHA-256 verification. Updates are disabled when no repository is configured.
+- Apple on-device translation or an optional online model, with batching, caching and track-switch isolation. The app checks the lyrics' language tag first and identifies untagged songs on-device. Only clearly foreign-language songs qualify for automatic translation. Existing Chinese cache translations take priority.
+- GitHub Releases updates from this repository, with SHA-256 verification for installer downloads.
 
-Removed: lyric exports, old floating layouts, click-through, Option-key interaction, global shortcuts and arbitrary resizing.
+Removed: lyric exports, old floating layouts, Option-key interaction and global shortcuts.
 
 ## Requirements
 
@@ -27,45 +30,52 @@ Removed: lyric exports, old floating layouts, click-through, Option-key interact
 | Architecture | Apple Silicon / arm64 only |
 | Runtime | macOS 13+ |
 | Glass | Native NSGlassEffectView on 26+; NSVisualEffectView on 13–25 |
-| Machine translation | macOS 15+; older systems show cached translations only |
-| Translation quality selection | macOS 26.4+; earlier systems use the available system strategy |
+| Machine translation | System on-device translation on macOS 15+; configurable online translation on macOS 13+ |
+| Automatic translation | Off by default. The default provider is system on-device translation. |
 | Build SDK | Xcode 26.4+, macOS SDK 26.4+, Swift 6.3+ |
 
 Reduce Transparency uses an opaque system background. Reduce Motion suppresses decorative vinyl rotation.
-Translation strategy selection and fallback follow [Apple's documented behavior](https://developer.apple.com/documentation/translation/translationsession/strategy).
 
 ## Build and test
 
 ```bash
 swift test
-VERSION=2.1.0 ./scripts/package-app.sh
-open "dist/Apple Music Lyrics.app"
+./scripts/package-app.sh
+open "dist/Just-For-Music.app"
 ```
 
-The local preview bundle identifier is `local.applemusiclyrics.v2`, separate from upstream. Override it with `BUNDLE_IDENTIFIER` for your own build. The display name currently remains Apple Music Lyrics.
+The default bundle identifier is `io.github.dadelen.just-for-music`. The 1.0 release uses `1.0.0` in the macOS bundle and packaging tools.
 
-Allow Music automation when prompted. Open the lyrics panel in Music first to populate its cache. Install missing language resources through Settings → Translation; the app does not silently request downloads.
+Allow Music automation when prompted. Open the lyrics panel in Music first to populate its cache. Local translation uses installed system language packs. Download any missing packs in System Settings → General → Language & Region → Translation Languages, then recheck in the app’s Translation settings.
 
-The app reads Music's private cache format at `~/Library/Caches/com.apple.Music/`. Format changes, cache eviction, unavailable lyrics and imported local tracks can prevent lyric retrieval. No account tokens are extracted. Lyrics are not sent to third-party translation services. Multi-character TTML spans use interpolated highlighting within their supplied timing.
+To use an online model, choose Settings → Translation → Online model and enter an OpenAI-compatible HTTPS or local HTTP endpoint. Fetch the service’s model list or enter a model ID manually if discovery is unavailable. Save profiles and select the active one in the list. API keys are saved in macOS Keychain. Test Connection sends a fixed sample. Once the app confirms a song is predominantly foreign-language, it sends lines without an existing Chinese translation to the selected model, which skips Chinese and mixed Chinese-language lines. Uncertain songs, including short lyrics that could be either Chinese or Japanese, stay in the original language without a request. System translation can fill in missing results on macOS 15 or later.
 
-Public APIs cannot precisely measure all remaining menu-bar space. Automatic mode chooses a conservative width; manual compact/icon modes remain available. The system can still hide a status item.
+The app reads Music's private cache format at `~/Library/Caches/com.apple.Music/`. Format changes, cache eviction, unavailable lyrics and imported local tracks can prevent lyric retrieval. No account tokens are extracted. Multi-character TTML spans use interpolated highlighting within their supplied timing.
+
+Automatic mode chooses a conservative width, and Icon Only mode is available when space is limited. The system can still hide a status item.
 
 ## Distribution
 
 ```bash
-VERSION=2.1.0 ./scripts/create-release-artifacts.sh
+VERSION=1.0.0 ./scripts/create-release-artifacts.sh
 ```
 
 This creates arm64 ZIP/DMG archives and SHA256SUMS in `dist/release/`. Local builds are ad-hoc signed and not notarized.
 
-After creating your own repository, explicitly supply your own settings:
+Forks can override the defaults:
 
 ```bash
 BUNDLE_IDENTIFIER=com.yourname.lyrics \
 UPDATE_REPOSITORY=yourname/your-repository \
-VERSION=2.1.0 ./scripts/create-release-artifacts.sh
+VERSION=1.0.0 ./scripts/create-release-artifacts.sh
 ```
 
-No remote repository or Release was created during this development. Local builds have no update source by default. A future tag-triggered GitHub workflow uses its own `github.repository` as the update source; configure the repository variable `BUNDLE_IDENTIFIER` before publishing.
+The `v1.0` release contains source archives. Three-part version tags can trigger the installer build workflow. It uses the repository that runs the workflow as the update source.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for integration tests and constraints, [requirements](docs/REQUIREMENTS_V2.md) and [delivery report](docs/DEVELOPMENT_REPORT.md) for verification status. Diagnostic logs may contain track metadata; review them before sharing.
+
+## Attribution and notices
+
+Maintained by [dadelen](https://github.com/dadelen). Based on [Takpap/apple-music-lyrics](https://github.com/Takpap/apple-music-lyrics), with thanks to Takpap and the original contributors. The original copyright notice and [MIT License](LICENSE) are retained.
+
+Just-For-Music is an independent project. Apple does not sponsor or endorse it. Apple, Apple Music, and macOS are trademarks of Apple Inc. Lyrics, artwork, and other Music content belong to their respective rights holders. The project's MIT license applies to the software.

@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - "v*"
+      - "v[0-9]+.[0-9]+.[0-9]+"
 
 permissions:
   contents: write
@@ -78,5 +78,5 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             dist/release/* \
             --verify-tag \
-            --title "Apple Music Lyrics ${GITHUB_REF_NAME#v}" \
+            --title "Just-For-Music ${GITHUB_REF_NAME#v}" \
             --generate-notes

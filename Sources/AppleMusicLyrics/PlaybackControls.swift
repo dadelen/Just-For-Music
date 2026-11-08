@@ -52,24 +52,4 @@ final class PlaybackControls: NSView {
         playing = isPlaying
         play.setSymbol(isPlaying ? "pause.fill" : "play.fill", label: isPlaying ? "暂停" : "播放")
     }
-
-    /// Dispatch a click received by the system status button to its displayed segment.
-    func activate(at point: NSPoint) -> Bool {
-        guard !isHidden, bounds.contains(point) else { return false }
-        let button = buttons[min(buttons.count - 1, Int(point.x / buttonWidth))]
-        if button.isEnabled { button.onPress?() }
-        return true
-    }
-
-    var accessibilityActions: [NSAccessibilityCustomAction] {
-        guard !isHidden else { return [] }
-        return buttons.compactMap { button in
-            guard button.isEnabled, let label = button.accessibilityLabel() else { return nil }
-            return NSAccessibilityCustomAction(name: label) { [weak button] in
-                guard let button, button.isEnabled else { return false }
-                button.onPress?()
-                return true
-            }
-        }
-    }
 }

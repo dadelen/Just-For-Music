@@ -6,8 +6,7 @@ cd "$ROOT"
 
 VERSION="${VERSION:-${1:-}}"
 BUILD_NUMBER="${BUILD_NUMBER:-1}"
-APP_NAME="Apple Music Lyrics"
-SLUG="Apple-Music-Lyrics"
+APP_NAME="Just-For-Music"
 ARTIFACT_DIR="$ROOT/dist/release"
 STAGING_DIR="$ROOT/dist/dmg-staging"
 
@@ -24,8 +23,8 @@ APP="$ROOT/dist/$APP_NAME.app"
 rm -rf "$ARTIFACT_DIR" "$STAGING_DIR"
 mkdir -p "$ARTIFACT_DIR" "$STAGING_DIR"
 
-ZIP="$ARTIFACT_DIR/$SLUG-$VERSION-macos-arm64.zip"
-DMG="$ARTIFACT_DIR/$SLUG-$VERSION-macos-arm64.dmg"
+ZIP="$ARTIFACT_DIR/$APP_NAME-$VERSION-macos-arm64.zip"
+DMG="$ARTIFACT_DIR/$APP_NAME-$VERSION-macos-arm64.dmg"
 
 ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
 ditto "$APP" "$STAGING_DIR/$APP_NAME.app"

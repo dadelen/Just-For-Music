@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 "$ROOT/scripts/check-build-sdk.sh"
 
-APP_NAME="Apple Music Lyrics"
+APP_NAME="Just-For-Music"
 DIST="$ROOT/dist"
 APP="$DIST/$APP_NAME.app"
 CONTENTS="$APP/Contents"
@@ -17,8 +17,8 @@ APP_ICON="$ROOT/Resources/AppIcon.icns"
 VERSION="${VERSION:-1.0.0}"
 BUILD_NUMBER="${BUILD_NUMBER:-1}"
 CODESIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
-BUNDLE_IDENTIFIER="${BUNDLE_IDENTIFIER:-local.applemusiclyrics.v2}"
-UPDATE_REPOSITORY="${UPDATE_REPOSITORY:-}"
+BUNDLE_IDENTIFIER="${BUNDLE_IDENTIFIER:-io.github.dadelen.just-for-music}"
+UPDATE_REPOSITORY="${UPDATE_REPOSITORY-dadelen/Just-For-Music}"
 
 if [[ ! "$BUNDLE_IDENTIFIER" =~ ^[A-Za-z][A-Za-z0-9-]*(\.[A-Za-z0-9-]+)+$ ]]; then
   echo "BUNDLE_IDENTIFIER must be a reverse-DNS identifier" >&2
@@ -70,12 +70,12 @@ done
 echo "→ Assembling $APP"
 rm -rf "$APP"
 mkdir -p "$MACOS" "$RESOURCES" "$HELPERS"
-cp "$BIN" "$MACOS/AppleMusicLyrics"
+cp "$BIN" "$MACOS/$APP_NAME"
 cp "$HELPER_BIN" "$HELPERS/AppleMusicLyricsPlaybackHelper"
 cp "$APP_ICON" "$RESOURCES/AppIcon.icns"
 cp "$ROOT/LICENSE" "$RESOURCES/LICENSE"
 cp "$ROOT/Resources/InstallGuide.txt" "$RESOURCES/InstallGuide.txt"
-chmod +x "$MACOS/AppleMusicLyrics" "$HELPERS/AppleMusicLyricsPlaybackHelper"
+chmod +x "$MACOS/$APP_NAME" "$HELPERS/AppleMusicLyricsPlaybackHelper"
 
 cat > "$CONTENTS/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -85,15 +85,17 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
   <key>CFBundleDevelopmentRegion</key>
   <string>en</string>
   <key>CFBundleExecutable</key>
-  <string>AppleMusicLyrics</string>
+  <string>Just-For-Music</string>
   <key>CFBundleIdentifier</key>
-  <string>local.applemusiclyrics.v2</string>
+  <string>io.github.dadelen.just-for-music</string>
   <key>CFBundleIconFile</key>
   <string>AppIcon</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
-  <string>Apple Music Lyrics</string>
+  <string>Just-For-Music</string>
+  <key>CFBundleDisplayName</key>
+  <string>Just-For-Music</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
@@ -105,7 +107,7 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
   <key>LSUIElement</key>
   <true/>
   <key>NSAppleEventsUsageDescription</key>
-  <string>Apple Music Lyrics needs to read the currently playing track from the Music app.</string>
+  <string>Just-For-Music reads the current track and controls playback in the Music app.</string>
   <key>NSHighResolutionCapable</key>
   <true/>
 </dict>

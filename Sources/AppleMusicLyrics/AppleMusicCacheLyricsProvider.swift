@@ -26,6 +26,7 @@ final class AppleMusicCacheLyricsProvider: @unchecked Sendable {
     }
 
     func lyrics(for track: TrackInfo) -> LyricsDocument {
+        guard !Task.isCancelled else { return .empty }
         var best: (match: TrackMetadataMatch, song: CatalogSong)?
         var readableCandidates = 0
         var decodedResponses = 0
@@ -38,6 +39,7 @@ final class AppleMusicCacheLyricsProvider: @unchecked Sendable {
                 + "candidates=\(candidates.count)"
         )
         for candidate in candidates {
+            guard !Task.isCancelled else { return .empty }
             guard let data = candidate.data() else {
                 continue
             }
@@ -118,6 +120,7 @@ final class AppleMusicCacheLyricsProvider: @unchecked Sendable {
 
     private func candidates() -> [CacheCandidate] {
         let indexed = indexedCandidates()
+        guard !Task.isCancelled else { return [] }
         var candidates = indexed
         var indexedPaths = Set(indexed.compactMap(\.fileURL))
 
@@ -281,9 +284,10 @@ final class AppleMusicCacheLyricsProvider: @unchecked Sendable {
             .filter { $0.key != key && $0.value != primary }
             .sorted { $0.key < $1.key }
             .map { LocalizedTTMLAlternative(locale: $0.key, ttml: $0.value) }
+        let taggedLanguage = TTMLLanguageDetector.language(in: primary)
         return LocalizedTTMLSelection(
             primaryTTML: normalizedPrimary,
-            locale: key,
+            locale: LyricsDocument.declaredLanguageCode(taggedLanguage) != nil ? taggedLanguage : key,
             alternatives: alternatives
         )
     }
@@ -294,6 +298,10 @@ final class AppleMusicCacheLyricsProvider: @unchecked Sendable {
     ) -> [LyricLine] {
         var translations: [Int: String] = [:]
         var translationLanguages: [Int: String] = [:]
+        for (index, line) in primaryLines.enumerated() {
+            translations[index] = line.translation
+            translationLanguages[index] = line.translationLanguage
+        }
         var transliterations: [Int: String] = [:]
 
         for alternative in alternatives {
@@ -319,7 +327,8 @@ final class AppleMusicCacheLyricsProvider: @unchecked Sendable {
                       primaryLines[index].text != alternativeLine.text else { continue }
                 if isTransliteration {
                     transliterations[index, default: alternativeLine.text] = alternativeLine.text
-                } else if translations[index] == nil || normalizedLocale.hasPrefix("zh") {
+                } else if translations[index] == nil ||
+                            (normalizedLocale.hasPrefix("zh") && translationLanguages[index]?.lowercased().hasPrefix("zh") != true) {
                     translations[index] = alternativeLine.text
                     translationLanguages[index] = alternative.locale
                 }
@@ -680,6 +689,7 @@ private enum TTMLLanguageDetector {
             guard !foundRoot else { return }
             foundRoot = true
             language = attributeDict["xml:lang"] ?? attributeDict["lang"]
+            parser.abortParsing()
         }
     }
 }

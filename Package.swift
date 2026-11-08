@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "AppleMusicLyrics",
+    name: "Just-For-Music",
     platforms: [
         .macOS(.v13)
     ],

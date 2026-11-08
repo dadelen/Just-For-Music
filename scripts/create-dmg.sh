@@ -5,12 +5,12 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="${1:-}"
 VERSION="${2:-}"
 OUTPUT_DMG="${3:-}"
-APP_NAME="Apple Music Lyrics"
+APP_NAME="Just-For-Music"
 BACKGROUND_GENERATOR="$ROOT/scripts/generate-dmg-background.swift"
 INSTALL_GUIDE="$ROOT/Resources/InstallGuide.txt"
 
 if [[ ! -d "$APP" || "$(basename "$APP")" != "$APP_NAME.app" ]]; then
-  echo "Usage: $0 <Apple Music Lyrics.app> <version> <output.dmg>" >&2
+  echo "Usage: $0 <$APP_NAME.app> <version> <output.dmg>" >&2
   exit 1
 fi
 if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || "$OUTPUT_DMG" != *.dmg ]]; then

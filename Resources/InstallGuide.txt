@@ -1,23 +1,22 @@
-Apple Music Lyrics V2 — 本地预览安装说明
+Just-For-Music — 安装与权限说明
 
 仅支持 Apple Silicon，macOS 13 或更高版本。
-将 Apple Music Lyrics.app 放入“应用程序”，打开后使用状态栏入口。
+将 Just-For-Music.app 放入“应用程序”，打开后使用状态栏入口。
 首次需要允许应用控制 Music；请在 Music 中打开歌词，让系统先缓存歌曲歌词。
 
-桌面浮窗采用系统玻璃，无自定义底色。窗口大小在设置中选择 Small 或 Large。
-本地翻译需要 macOS 15+ 及系统语言资源；在“翻译 → 准备语言资源”中下载。
+桌面浮窗采用系统玻璃。可通过左上角绿色按钮切换黑胶或极简模式，解锁后可拖动黑胶窗口边缘缩放。
+本地翻译需要 macOS 15+ 及系统语言资源。可在系统设置的「语言与地区」下载翻译语言。
 同一句中外文混合时整句跳过自动翻译。无译文不影响原文及播放。
 
-本地预览标识：local.applemusiclyrics.v2。此包使用 ad-hoc 签名，未完成 Apple 公证。
-自动更新未配置；自有 GitHub 仓库需由维护者自行创建和配置。
+默认应用标识为 io.github.dadelen.just-for-music。默认构建使用 ad-hoc 签名，未完成 Apple 公证。
+更新发布页：https://github.com/dadelen/Just-For-Music/releases
 不必授予完全磁盘访问，也不需要提供 Apple 账户凭据。
 
 原项目：https://github.com/Takpap/apple-music-lyrics
 Copyright (c) 2026 Apple Music Lyrics contributors
-MIT License，完整文本随应用附在 Resources/LICENSE。
+完整的 MIT License 随应用附在 Resources/LICENSE。本项目由 dadelen 维护，独立于 Apple。
 
 English: Apple Silicon only, macOS 13+. Allow Music automation and open lyrics in
 Music to populate its cache. Local translation requires macOS 15+ and installed
-system language resources. This preview is ad-hoc signed, not notarized, and has
-no update repository configured by default. Upstream credits and MIT license
-are preserved in the bundle.
+system language resources. The default build is ad-hoc signed and not notarized.
+Upstream credits and the MIT license are preserved in the bundle.

@@ -33,6 +33,10 @@ enum AppleTTMLParser {
 
         private var depth = 0
         private var bodyDepth: Int?
+        private var metadataDepth: Int?
+        private var translationBlock: (depth: Int, language: String?)?
+        private var translationEntry: (depth: Int, key: String, text: String)?
+        private var translations: [String: (text: String, language: String?)] = [:]
         private var line: LineBuilder?
         private var spans: [SpanBuilder] = []
 
@@ -49,12 +53,23 @@ enum AppleTTMLParser {
                 bodyDepth = depth
                 return
             }
-            guard bodyDepth != nil else { return }
+            guard bodyDepth != nil else {
+                if name == "iTunesMetadata" {
+                    metadataDepth = depth
+                } else if metadataDepth != nil, name == "translation",
+                          attributeDict["type"] == nil || attributeDict["type"] == "subtitle" {
+                    translationBlock = (depth, attributeDict["xml:lang"])
+                } else if translationBlock != nil, name == "text", let key = attributeDict["for"] {
+                    translationEntry = (depth, key, "")
+                }
+                return
+            }
 
             if name == "p" {
                 line = LineBuilder(
                     start: time(attributeDict["begin"]),
-                    end: time(attributeDict["end"])
+                    end: time(attributeDict["end"]),
+                    key: attributeDict["itunes:key"] ?? attributeDict.first { $0.key.hasSuffix(":key") }?.value
                 )
                 spans.removeAll(keepingCapacity: true)
             } else if name == "span", line != nil, let start = time(attributeDict["begin"]) {
@@ -79,7 +94,19 @@ enum AppleTTMLParser {
         ) {
             let name = localName(elementName, qualifiedName: qName)
 
-            if name == "span", spans.last?.depth == depth, let span = spans.popLast() {
+            if let entry = translationEntry, entry.depth == depth {
+                let text = normalizedWhitespace(entry.text).trimmingCharacters(in: .whitespacesAndNewlines)
+                let language = translationBlock?.language
+                let previous = translations[entry.key]
+                if !text.isEmpty, previous == nil || (isChinese(language) && !isChinese(previous?.language)) {
+                    translations[entry.key] = (text, language)
+                }
+                translationEntry = nil
+            } else if translationBlock?.depth == depth {
+                translationBlock = nil
+            } else if metadataDepth == depth {
+                metadataDepth = nil
+            } else if name == "span", spans.last?.depth == depth, let span = spans.popLast() {
                 flush(span: span)
             } else if name == "p", let line {
                 finish(line: line)
@@ -92,6 +119,10 @@ enum AppleTTMLParser {
         }
 
         func parser(_ parser: XMLParser, foundCharacters string: String) {
+            if translationEntry != nil {
+                translationEntry?.text += string
+                return
+            }
             guard line != nil else { return }
             if !spans.isEmpty {
                 spans[spans.count - 1].text += string
@@ -146,6 +177,7 @@ enum AppleTTMLParser {
             let text = line.words.map(\.text).joined()
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
             let start = line.start ?? line.words[0].start
+            let translation = line.key.flatMap { translations[$0] }
             lines.append(
                 LyricLine(
                     time: start,
@@ -153,8 +185,10 @@ enum AppleTTMLParser {
                     words: line.words.map {
                         LyricWord(text: $0.text, start: $0.start, end: $0.end)
                     },
+                    translation: translation?.text,
                     confirmedEnd: line.end ?? (line.words.allSatisfy { $0.explicitEnd != nil }
-                        ? line.words.compactMap(\.explicitEnd).max() : nil)
+                        ? line.words.compactMap(\.explicitEnd).max() : nil),
+                    translationLanguage: translation?.language
                 )
             )
         }
@@ -162,6 +196,10 @@ enum AppleTTMLParser {
         private func localName(_ elementName: String, qualifiedName: String?) -> String {
             let value = qualifiedName ?? elementName
             return value.split(separator: ":").last.map(String.init) ?? value
+        }
+
+        private func isChinese(_ language: String?) -> Bool {
+            language?.lowercased().hasPrefix("zh") == true
         }
     }
 
@@ -217,6 +255,7 @@ enum AppleTTMLParser {
     private struct LineBuilder {
         let start: TimeInterval?
         let end: TimeInterval?
+        let key: String?
         var pendingText = ""
         var words: [MutableWord] = []
     }

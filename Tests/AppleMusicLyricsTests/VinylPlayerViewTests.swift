@@ -42,6 +42,81 @@ final class VinylPlayerViewTests: XCTestCase {
         XCTAssertEqual(record.speed, 0)
     }
 
+    func testTrackTempoChangesPreserveRotationPhase() throws {
+        let view = VinylPlayerView(frame: NSRect(x: 0, y: 0, width: 240, height: 190))
+        let record = try XCTUnwrap(view.layer?.sublayers?.first { $0.animation(forKey: "rotation") != nil })
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        let rotation = try XCTUnwrap(record.animation(forKey: "rotation"))
+
+        view.update(playing: true, visible: true, trackIdentity: "fast", bpm: 120)
+        XCTAssertEqual(rotation.duration / Double(record.speed), 6, accuracy: 0.001)
+        let changeTime = CACurrentMediaTime()
+        let phaseBeforeChange = record.convertTime(changeTime, from: nil)
+        view.update(playing: true, visible: true, trackIdentity: "slow", bpm: 90)
+        XCTAssertEqual(rotation.duration / Double(record.speed), 8, accuracy: 0.001)
+        XCTAssertEqual(record.convertTime(changeTime, from: nil), phaseBeforeChange, accuracy: 0.02)
+
+        view.update(playing: false, visible: true, trackIdentity: "slow", bpm: 90)
+        let pausedPhase = record.timeOffset
+        view.update(playing: false, visible: true, trackIdentity: "fast", bpm: 120)
+        XCTAssertEqual(record.speed, 0)
+        XCTAssertEqual(record.timeOffset, pausedPhase)
+        view.update(playing: true, visible: true, trackIdentity: "fast", bpm: 120)
+        XCTAssertEqual(record.convertTime(CACurrentMediaTime(), from: nil), pausedPhase, accuracy: 0.02)
+
+        view.update(playing: true, visible: true, trackIdentity: "slow", bpm: 90)
+        view.update(playing: true, visible: true, trackIdentity: "missing")
+        XCTAssertEqual(rotation.duration / Double(record.speed), 6, accuracy: 0.001)
+        view.update(playing: true, visible: true, trackIdentity: "slow", bpm: 90)
+        view.update(playing: true, visible: true, trackIdentity: "invalid", bpm: 0)
+        XCTAssertEqual(rotation.duration / Double(record.speed), 6, accuracy: 0.001)
+    }
+
+    func testTrackChangeWhilePlayingParksTheNeedleBeforeReturning() throws {
+        let view = VinylPlayerView(frame: NSRect(x: 0, y: 0, width: 240, height: 190))
+        let arm = try XCTUnwrap(view.layer?.sublayers?.compactMap { $0 as? CAShapeLayer }.first { $0.lineCap == .round })
+        view.update(playing: true, visible: true, trackIdentity: "first")
+        arm.removeAnimation(forKey: "needle")
+        view.update(playing: true, visible: true, trackIdentity: "second")
+
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            XCTAssertNil(arm.animation(forKey: "needle"))
+        } else {
+            let animation = try XCTUnwrap(arm.animation(forKey: "needle") as? CAKeyframeAnimation)
+            let angles = try XCTUnwrap(animation.values as? [Double])
+            XCTAssertEqual(angles.count, 4)
+            XCTAssertGreaterThan(angles[1], angles[0])
+            XCTAssertEqual(angles[1], angles[2])
+            XCTAssertEqual(angles[3], angles[0], accuracy: 0.001)
+        }
+
+        arm.removeAnimation(forKey: "needle")
+        view.update(playing: true, visible: true, trackIdentity: "second")
+        XCTAssertNil(arm.animation(forKey: "needle"))
+
+        view.update(playing: false, visible: true, trackIdentity: "second")
+        arm.removeAnimation(forKey: "needle")
+        view.update(playing: false, visible: true, trackIdentity: "third")
+        XCTAssertNil(arm.animation(forKey: "needle"))
+    }
+
+    func testNeedleHoldsCueWhileMusicStillReportsTheOldState() async throws {
+        let view = VinylPlayerView(frame: NSRect(x: 0, y: 0, width: 240, height: 190))
+        let arm = try XCTUnwrap(view.layer?.sublayers?.compactMap { $0 as? CAShapeLayer }.first { $0.lineCap == .round })
+        view.update(playing: true, visible: false, trackIdentity: "song")
+        let playingAngle = try XCTUnwrap(arm.value(forKeyPath: "transform.rotation.z") as? Double)
+        await view.cueNeedle(ontoRecord: false)
+        let parkedAngle = try XCTUnwrap(arm.value(forKeyPath: "transform.rotation.z") as? Double)
+        XCTAssertGreaterThan(parkedAngle, playingAngle)
+
+        view.update(playing: true, visible: true, trackIdentity: "song")
+        XCTAssertEqual(arm.value(forKeyPath: "transform.rotation.z") as? Double, parkedAngle)
+        view.update(playing: false, visible: true, trackIdentity: "song")
+        view.followPlayback()
+        XCTAssertEqual(arm.value(forKeyPath: "transform.rotation.z") as? Double, parkedAngle)
+        XCTAssertNil(arm.animation(forKey: "needle"))
+    }
+
     func testTonearmActsAsPlaybackButtonWithoutInterceptingRecordCenter() throws {
         let view = VinylPlayerView(frame: NSRect(x: 0, y: 0, width: 240, height: 190))
         view.layoutSubtreeIfNeeded()

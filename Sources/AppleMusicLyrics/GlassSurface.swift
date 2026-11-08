@@ -5,9 +5,16 @@ final class GlassSurface: NSView {
     let content = NSView()
     private var material: NSView?
     private let corner: CGFloat
+    private let clearGlass: Bool
+    private let adjustableOpacity: Bool
+    var backgroundOpacity: CGFloat = 1 {
+        didSet { updateMaterialOpacity() }
+    }
 
-    init(cornerRadius: CGFloat = 24) {
+    init(cornerRadius: CGFloat = 24, clearGlass: Bool = false, adjustableOpacity: Bool = false) {
         corner = cornerRadius
+        self.clearGlass = clearGlass
+        self.adjustableOpacity = adjustableOpacity
         super.init(frame: .zero)
         wantsLayer = true
         layer?.cornerRadius = corner
@@ -32,9 +39,11 @@ final class GlassSurface: NSView {
             if #available(macOS 26.0, *) {
                 let glass = NSGlassEffectView()
                 glass.cornerRadius = corner
-                glass.style = .regular
-                glass.contentView = content
+                glass.style = clearGlass ? .clear : .regular
+                glass.contentView = adjustableOpacity ? NSView() : content
                 addSubview(glass)
+                // Adjustable glass sits behind its content so text keeps its full opacity.
+                if adjustableOpacity { addSubview(content) }
                 material = glass
             } else {
                 installLegacyMaterial()
@@ -43,7 +52,14 @@ final class GlassSurface: NSView {
             installLegacyMaterial()
             #endif
         }
+        updateMaterialOpacity()
         needsLayout = true
+    }
+
+    private func updateMaterialOpacity() {
+        guard adjustableOpacity, let material else { return }
+        material.alphaValue = backgroundOpacity
+        material.isHidden = backgroundOpacity == 0
     }
 
     private func installLegacyMaterial() {
@@ -54,11 +70,6 @@ final class GlassSurface: NSView {
         addSubview(effect)
         addSubview(content)
         material = effect
-        updateOpacity()
-    }
-
-    func updateOpacity() {
-        (material as? NSVisualEffectView)?.alphaValue = CGFloat(AppPreferences.floatingLyricsOpacity)
     }
 
     override func layout() {

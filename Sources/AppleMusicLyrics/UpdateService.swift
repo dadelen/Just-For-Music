@@ -200,7 +200,7 @@ final class UpdateService: @unchecked Sendable {
     private func request(for url: URL) -> URLRequest {
         var request = URLRequest(url: url)
         request.setValue(
-            "Apple-Music-Lyrics/\(currentVersion?.description ?? "unknown")",
+            "\(AppIdentity.name)/\(currentVersion?.description ?? "unknown")",
             forHTTPHeaderField: "User-Agent"
         )
         request.timeoutInterval = 30

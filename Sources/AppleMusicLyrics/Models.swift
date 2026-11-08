@@ -23,9 +23,19 @@ struct TrackInfo: Equatable, Sendable {
     let duration: TimeInterval
     let position: TimeInterval
     let state: PlayerState
+    let bpm: Int?
+    let identityKey: String
 
-    var identityKey: String {
-        "\(artist.lowercased())|\(title.lowercased())|\(album.lowercased())|\(Int(duration.rounded()))"
+    init(title: String, artist: String, album: String, duration: TimeInterval,
+         position: TimeInterval, state: PlayerState, bpm: Int? = nil) {
+        self.title = title
+        self.artist = artist
+        self.album = album
+        self.duration = duration
+        self.position = position
+        self.state = state
+        self.bpm = bpm
+        identityKey = "\(artist.lowercased())|\(title.lowercased())|\(album.lowercased())|\(Int(duration.rounded()))"
     }
 
     var displayName: String {
@@ -60,6 +70,12 @@ struct LyricLine: Equatable, Sendable, Identifiable {
     let isMachineTranslation: Bool
 
     var id: String { "\(time)-\(text.hashValue)" }
+
+    var hasPreferredOriginalTranslation: Bool {
+        guard !isMachineTranslation,
+              let translation, !translation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        return translationLanguage?.lowercased().hasPrefix("zh") ?? true
+    }
 
     init(
         time: TimeInterval,
@@ -105,6 +121,22 @@ struct LyricsDocument: Equatable, Sendable {
     let wordTiming: WordTimingQuality
     let artworkURL: URL?
     let sourceLanguage: String?
+
+    /// nil means the source didn't declare a usable song language.
+    var isDeclaredForeign: Bool? {
+        Self.declaredLanguageCode(sourceLanguage).map { code in
+            !["zh", "zho", "chi", "cmn", "yue", "wuu", "nan", "hak", "hsn", "gan", "lzh",
+              "cdo", "cjy", "cpx", "czh", "czo", "mnp", "csp"].contains(code)
+        }
+    }
+
+    static func declaredLanguageCode(_ tag: String?) -> String? {
+        guard let code = tag?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            .split(whereSeparator: { $0 == "-" || $0 == "_" }).first,
+              (2...3).contains(code.count), code.utf8.allSatisfy({ (97...122).contains($0) }),
+              !["und", "mul", "mis", "zxx"].contains(code) else { return nil }
+        return String(code)
+    }
 
     init(
         lines: [LyricLine],
