@@ -90,6 +90,10 @@ enum AppPreferences {
     }
     static let floatingLyricsModeKey = "floatingLyrics.size"
     static let floatingPositionLockKey = "floatingLyrics.positionLocked"
+    static let floatingLyricsShadowKey = "floatingLyrics.showWindowShadow"
+    static var floatingLyricsShowsShadow: Bool {
+        defaultedBool(floatingLyricsShadowKey, default: true)
+    }
     static var floatingLyricsMode: FloatingLyricsMode {
         get { enumValue(floatingLyricsModeKey, default: .vinyl) }
         set { UserDefaults.standard.set(newValue.rawValue, forKey: floatingLyricsModeKey) }

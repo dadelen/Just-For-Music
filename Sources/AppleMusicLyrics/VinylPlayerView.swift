@@ -48,7 +48,8 @@ final class VinylPlayerView: NSView {
         wantsLayer = true
         // Rotate the composited disc as one surface. The reflection and needle stay separate.
         record.shouldRasterize = true
-        updateRecordRasterizationScale()
+        reflection.shouldRasterize = true
+        updateRasterizationScale()
         layer?.addSublayer(record)
         recordShadow.backgroundColor = NSColor.black.cgColor
         recordShadow.shadowColor = NSColor.black.cgColor
@@ -143,11 +144,13 @@ final class VinylPlayerView: NSView {
 
     override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
-        updateRecordRasterizationScale()
+        updateRasterizationScale()
     }
 
-    private func updateRecordRasterizationScale() {
-        record.rasterizationScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+    private func updateRasterizationScale() {
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        record.rasterizationScale = scale
+        reflection.rasterizationScale = scale
     }
 
     func setArtwork(_ image: NSImage?) {

@@ -4,7 +4,7 @@ English | [简体中文](README.zh-CN.md)
 
 <img src="Resources/AppIcon.png" alt="Just-For-Music logo" width="128">
 
-A macOS menu bar companion for Apple Music with synced lyrics, playback controls, and a floating lyrics window. The first public source release is [Just-For-Music 1.0](https://github.com/dadelen/Just-For-Music/releases/tag/v1.0).
+A macOS menu bar companion for Apple Music with synced lyrics, playback controls, and a floating lyrics window. [Download for Apple Silicon](https://github.com/dadelen/Just-For-Music/releases/latest) · [Changelog](CHANGELOG.md)
 
 The existing read-only Music cache provider, TTML parser and playback monitor remain the core.
 
@@ -44,7 +44,7 @@ swift test
 open "dist/Just-For-Music.app"
 ```
 
-The default bundle identifier is `io.github.dadelen.just-for-music`. The 1.0 release uses `1.0.0` in the macOS bundle and packaging tools.
+The default bundle identifier is `io.github.dadelen.just-for-music`.
 
 Allow Music automation when prompted. Open the lyrics panel in Music first to populate its cache. Local translation uses installed system language packs. Download any missing packs in System Settings → General → Language & Region → Translation Languages, then recheck in the app’s Translation settings.
 
@@ -57,7 +57,7 @@ Automatic mode chooses a conservative width, and Icon Only mode is available whe
 ## Distribution
 
 ```bash
-VERSION=1.0.0 ./scripts/create-release-artifacts.sh
+VERSION=1.0.1 BUILD_NUMBER=4 ./scripts/create-release-artifacts.sh
 ```
 
 This creates arm64 ZIP/DMG archives and SHA256SUMS in `dist/release/`. Local builds are ad-hoc signed and not notarized.
@@ -67,7 +67,7 @@ Forks can override the defaults:
 ```bash
 BUNDLE_IDENTIFIER=com.yourname.lyrics \
 UPDATE_REPOSITORY=yourname/your-repository \
-VERSION=1.0.0 ./scripts/create-release-artifacts.sh
+VERSION=1.0.1 BUILD_NUMBER=4 ./scripts/create-release-artifacts.sh
 ```
 
 The `v1.0` release contains source archives. Three-part version tags can trigger the installer build workflow. It uses the repository that runs the workflow as the update source.

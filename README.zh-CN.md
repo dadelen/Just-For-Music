@@ -4,7 +4,7 @@
 
 <img src="Resources/AppIcon.png" alt="Just-For-Music 标志" width="128">
 
-面向 Apple Music 的 macOS 状态栏工具，提供同步歌词、播放控制和桌面歌词浮窗。首个公开源码版本为 [Just-For-Music 1.0](https://github.com/dadelen/Just-For-Music/releases/tag/v1.0)。
+面向 Apple Music 的 macOS 状态栏工具，提供同步歌词、播放控制和桌面歌词浮窗。[下载 Apple Silicon 安装包](https://github.com/dadelen/Just-For-Music/releases/latest) · [更新记录](CHANGELOG.md)
 
 原有 Apple Music 缓存读取、TTML 解析和播放监测继续复用。此次改造围绕状态栏、系统玻璃浮窗、黑胶和歌词翻译展开。
 
@@ -63,7 +63,7 @@ swift test
 open "dist/Just-For-Music.app"
 ```
 
-应用标识为 `io.github.dadelen.just-for-music`。发布版本为 1.0，应用包及构建脚本使用三段版本号 `1.0.0`。
+默认应用标识为 `io.github.dadelen.just-for-music`。
 
 首次使用需要允许应用控制 Music。没有歌词时，先在 Music 打开歌词，再到「设置 → 维护」重新读取歌词缓存。本地翻译使用已安装的系统语言包。缺包时可在「系统设置 → 通用 → 语言与地区 → 翻译语言」下载，再到应用的「设置 → 翻译」重新检查。
 
@@ -74,7 +74,7 @@ open "dist/Just-For-Music.app"
 ## 打包与自有更新源
 
 ```bash
-VERSION=1.0.0 ./scripts/create-release-artifacts.sh
+VERSION=1.0.1 BUILD_NUMBER=4 ./scripts/create-release-artifacts.sh
 ```
 
 生成 arm64 ZIP、DMG 和 `SHA256SUMS.txt` 到 `dist/release/`。包内保留 MIT License。
@@ -84,7 +84,7 @@ VERSION=1.0.0 ./scripts/create-release-artifacts.sh
 ```bash
 BUNDLE_IDENTIFIER=com.yourname.lyrics \
 UPDATE_REPOSITORY=yourname/your-repository \
-VERSION=1.0.0 ./scripts/create-release-artifacts.sh
+VERSION=1.0.1 BUILD_NUMBER=4 ./scripts/create-release-artifacts.sh
 ```
 
 `v1.0` 提供源码归档。后续可用三段版本号标签触发安装包构建，工作流使用所在仓库作为更新源。

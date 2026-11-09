@@ -84,6 +84,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings.actions.previewGlassTransparency = { [weak self] transparency in
             self?.floating.setGlassTransparency(transparency)
         }
+        settings.actions.floatingLyricsShadowChanged = { [weak self] in
+            self?.floating.updateBackdropAppearance()
+        }
         settings.actions.floatingPositionLockChanged = { [weak self] in
             self?.floating.applyPositionLock()
         }

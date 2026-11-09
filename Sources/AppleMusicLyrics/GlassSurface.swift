@@ -31,6 +31,7 @@ final class GlassSurface: NSView {
         material?.removeFromSuperview()
         material = nil
         layer?.backgroundColor = nil
+        layer?.masksToBounds = true
         if NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency {
             layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
             addSubview(content)
@@ -43,7 +44,11 @@ final class GlassSurface: NSView {
                 glass.contentView = adjustableOpacity ? NSView() : content
                 addSubview(glass)
                 // Adjustable glass sits behind its content so text keeps its full opacity.
-                if adjustableOpacity { addSubview(content) }
+                if adjustableOpacity {
+                    // The floating controls are inset and the glass owns its rounded clip.
+                    layer?.masksToBounds = false
+                    addSubview(content)
+                }
                 material = glass
             } else {
                 installLegacyMaterial()

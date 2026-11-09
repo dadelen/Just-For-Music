@@ -1,6 +1,8 @@
 import AppKit
 import CoreImage
 import QuartzCore
+import ScreenCaptureKit
+import Vision
 import XCTest
 @testable import AppleMusicLyrics
 
@@ -88,7 +90,13 @@ final class FloatingLyricsWindowTests: XCTestCase {
     func testGlassTransparencyFadesOnlyTheFloatingBackdrop() throws {
         _ = NSApplication.shared
         let originalTransparency = AppPreferences.floatingLyricsGlassTransparency
-        defer { AppPreferences.floatingLyricsGlassTransparency = originalTransparency }
+        let shadowKey = AppPreferences.floatingLyricsShadowKey
+        let originalShadow = UserDefaults.standard.object(forKey: shadowKey)
+        defer {
+            AppPreferences.floatingLyricsGlassTransparency = originalTransparency
+            UserDefaults.standard.set(originalShadow, forKey: shadowKey)
+        }
+        UserDefaults.standard.set(true, forKey: shadowKey)
         AppPreferences.floatingLyricsGlassTransparency = 0.6
 
         let controller = FloatingLyricsController()
@@ -136,6 +144,7 @@ final class FloatingLyricsWindowTests: XCTestCase {
         controller.setGlassTransparency(1)
         XCTAssertTrue(material.isHidden)
         XCTAssertFalse(surface.content.isHidden)
+        XCTAssertFalse(canvas.layerUsesCoreImageFilters)
         XCTAssertEqual(blurRadius(on: nextLine), 0)
         XCTAssertEqual(nextLine.opacity, contextOpacity)
         XCTAssertLessThan(nextLine.opacity, currentLine.opacity)
@@ -144,9 +153,19 @@ final class FloatingLyricsWindowTests: XCTestCase {
 
         controller.setGlassTransparency(0)
         XCTAssertFalse(material.isHidden)
+        XCTAssertTrue(canvas.layerUsesCoreImageFilters)
         XCTAssertEqual(material.alphaValue, 1)
         XCTAssertEqual(blurRadius(on: nextLine), maximumBlur, accuracy: 0.001)
         XCTAssertEqual(blurRadius(on: currentLine), 0)
+        XCTAssertTrue(panel.hasShadow)
+
+        UserDefaults.standard.set(false, forKey: shadowKey)
+        controller.updateBackdropAppearance()
+        XCTAssertFalse(panel.hasShadow)
+        XCTAssertEqual(material.alphaValue, 1)
+        XCTAssertEqual(blurRadius(on: nextLine), maximumBlur, accuracy: 0.001)
+        UserDefaults.standard.set(true, forKey: shadowKey)
+        controller.updateBackdropAppearance()
         XCTAssertTrue(panel.hasShadow)
     }
 
@@ -205,6 +224,51 @@ final class FloatingLyricsWindowTests: XCTestCase {
         XCTAssertFalse(canvas.needsDisplay)
     }
 
+    func testFloatingLyricsKeepTheWindowAppearanceWhenSwitchingSongs() throws {
+        _ = NSApplication.shared
+        let originalColor = AppPreferences.floatingLyricsTextColor
+        defer { AppPreferences.floatingLyricsTextColor = originalColor }
+        AppPreferences.floatingLyricsTextColor = nil
+
+        let controller = FloatingLyricsController()
+        let canvas = try XCTUnwrap(Mirror(reflecting: controller).children.first { $0.label == "canvas" }?.value as? NSView)
+        defer { controller.setVisible(false, animated: false) }
+        func showTrack(_ title: String) {
+            let track = TrackInfo(title: title, artist: "", album: "", duration: 30, position: 1, state: .paused)
+            let line = LyricLine(time: 0, text: title, translation: "译文")
+            let lyrics = LyricsDocument(lines: [line], plainText: nil, source: "test", isSynced: true, wordTiming: .none)
+            controller.apply(status: .showing(track: track, lyrics: lyrics, currentLine: line.text))
+            if !controller.isVisible { controller.setVisible(true, animated: false) }
+        }
+        func textColors() throws -> [NSColor] {
+            let rows = try XCTUnwrap(Mirror(reflecting: canvas).children.first { $0.label == "karaokeLayers" }?.value as? [CALayer])
+            let row = try XCTUnwrap(rows.first)
+            return try ["upcomingLayer", "supplementaryLayer"].map { label in
+                let value = try XCTUnwrap(Mirror(reflecting: row).children.first { $0.label == label }?.value)
+                let layer = try XCTUnwrap(value as? CALayer)
+                let storage = try XCTUnwrap(Mirror(reflecting: layer).children.first { $0.label == "storage" }?.value as? NSTextStorage)
+                return try XCTUnwrap(storage.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor)
+            }
+        }
+
+        let light = try XCTUnwrap(NSAppearance(named: .aqua))
+        let dark = try XCTUnwrap(NSAppearance(named: .darkAqua))
+        for (appearance, ambient, expectsLightText) in [(dark, light, true), (light, dark, false)] {
+            canvas.appearance = appearance
+            for title in ["First track", "Second track"] {
+                ambient.performAsCurrentDrawingAppearance { showTrack(title) }
+                let colors = try textColors()
+                ambient.performAsCurrentDrawingAppearance {
+                    for color in colors {
+                        let brightness = color.usingColorSpace(.sRGB)?.redComponent ?? -1
+                        if expectsLightText { XCTAssertGreaterThan(brightness, 0.65) }
+                        else { XCTAssertLessThan(brightness, 0.4) }
+                    }
+                }
+            }
+        }
+    }
+
     func testKaraokeKeepsGradientOnlyOnThePartialGlyphAndRestoresItAfterSeeking() throws {
         _ = NSApplication.shared
         let controller = FloatingLyricsController()
@@ -213,7 +277,11 @@ final class FloatingLyricsWindowTests: XCTestCase {
             .init(text: "A", start: 1, end: 2),
             .init(text: "B", start: 2, end: 3)
         ])
-        let lyrics = LyricsDocument(lines: [line], plainText: nil, source: "test", isSynced: true, wordTiming: .exact)
+        let next = LyricLine(time: 6, text: "CD", words: [
+            .init(text: "C", start: 6, end: 7),
+            .init(text: "D", start: 7, end: 8)
+        ])
+        let lyrics = LyricsDocument(lines: [line, next], plainText: nil, source: "test", isSynced: true, wordTiming: .exact)
         func track(at position: TimeInterval) -> TrackInfo {
             TrackInfo(title: "Test", artist: "", album: "", duration: 10, position: position, state: .paused)
         }
@@ -228,6 +296,9 @@ final class FloatingLyricsWindowTests: XCTestCase {
 
         let rows = try XCTUnwrap(Mirror(reflecting: canvas).children.first { $0.label == "karaokeLayers" }?.value as? [CALayer])
         let units = try XCTUnwrap(rows.first?.sublayers)
+        let nextRow = try XCTUnwrap(rows.last)
+        XCTAssertEqual(nextRow.sublayers?.count, 1)
+        XCTAssertNil(nextRow.sublayers?.first?.sublayers)
         let glyphs = try units.map { try XCTUnwrap($0.sublayers?.last) }
         XCTAssertEqual(glyphs.count, 2)
         XCTAssertEqual(glyphs.map(\.isHidden), [false, true])
@@ -244,6 +315,68 @@ final class FloatingLyricsWindowTests: XCTestCase {
         show(at: 1.5)
         XCTAssertEqual(glyphs.map(\.isHidden), [false, true])
         XCTAssertEqual(glyphs.map { $0.mask != nil }, [true, false])
+
+        show(at: 6.5)
+        let nextGlyphs = try XCTUnwrap(nextRow.sublayers).map { try XCTUnwrap($0.sublayers?.last) }
+        XCTAssertEqual(nextGlyphs.map { $0.mask != nil }, [true, false])
+        show(at: 1.5)
+        XCTAssertEqual(nextRow.sublayers?.count, 1)
+        XCTAssertNil(nextRow.sublayers?.first?.sublayers)
+    }
+
+    func testLyricsRenderUprightInTheCompositedWindow() async throws {
+        guard ProcessInfo.processInfo.environment["FLOATING_LYRICS_WINDOW_INTEGRATION"] == "1",
+              #available(macOS 14.4, *) else {
+            throw XCTSkip("Run on a Mac desktop with FLOATING_LYRICS_WINDOW_INTEGRATION=1.")
+        }
+        _ = NSApplication.shared
+        let originalMode = AppPreferences.floatingLyricsMode
+        defer { AppPreferences.floatingLyricsMode = originalMode }
+        AppPreferences.floatingLyricsMode = .vinyl
+        let controller = FloatingLyricsController()
+        let panel = try XCTUnwrap(Mirror(reflecting: controller).children.first { $0.label == "panel" }?.value as? NSPanel)
+        panel.appearance = NSAppearance(named: .aqua)
+        panel.center()
+        let lines = ["FIRST LINE", "SECOND LINE", "THIRD LINE", "FOURTH LINE"].enumerated().map { index, text in
+            let start = Double(index) * 5
+            return LyricLine(time: start, text: text, words: [.init(text: text, start: start, end: start + 4)],
+                             translation: "Translation \(index + 1)")
+        }
+        let lyrics = LyricsDocument(lines: lines, plainText: nil, source: "test", isSynced: true, wordTiming: .exact)
+        let track = TrackInfo(title: "Orientation probe", artist: "", album: "", duration: 30, position: 6, state: .paused)
+        controller.apply(status: .showing(track: track, lyrics: lyrics, currentLine: lines[1].text))
+        controller.setVisible(true, animated: false)
+        defer { controller.setVisible(false, animated: false) }
+
+        for transparency in [0.6, 1.0] {
+            controller.setGlassTransparency(transparency)
+            try await Task.sleep(nanoseconds: 300_000_000)
+            // Capture our own test window after the WindowServer composes it.
+            let shareable = try await SCShareableContent.currentProcess
+            let window = try XCTUnwrap(shareable.windows.first { $0.windowID == CGWindowID(panel.windowNumber) })
+            let configuration = SCStreamConfiguration()
+            configuration.width = Int(panel.frame.width * 2)
+            configuration.height = Int(panel.frame.height * 2)
+            configuration.showsCursor = false
+            configuration.ignoreShadowsSingleWindow = true
+            let image = try await SCScreenshotManager.captureImage(
+                contentFilter: SCContentFilter(desktopIndependentWindow: window), configuration: configuration
+            )
+            let bitmap = try XCTUnwrap(CGContext(data: nil, width: image.width, height: image.height,
+                bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            let rect = CGRect(x: 0, y: 0, width: image.width, height: image.height)
+            bitmap.setFillColor(NSColor.white.cgColor)
+            bitmap.fill(rect)
+            bitmap.draw(image, in: rect)
+            let request = VNRecognizeTextRequest()
+            request.regionOfInterest = CGRect(x: 0.39, y: 0, width: 0.61, height: 1)
+            try VNImageRequestHandler(cgImage: XCTUnwrap(bitmap.makeImage())).perform([request])
+            let recognized = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ").lowercased()
+            for expected in ["second line", "translation 2", "third line", "translation 3"] {
+                XCTAssertTrue(recognized.contains(expected), "Transparency \(transparency), recognized \(recognized)")
+            }
+        }
     }
 
     func testWindowFocusRedrawsTrafficLightsAndOutlinesTransparentWindow() throws {

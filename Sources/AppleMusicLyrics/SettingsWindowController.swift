@@ -15,6 +15,7 @@ final class SettingsActions: ObservableObject {
     var floatingLyricsColorChanged: (() -> Void)?
     var floatingLyricsFontSizeChanged: (() -> Void)?
     var previewGlassTransparency: ((Double) -> Void)?
+    var floatingLyricsShadowChanged: (() -> Void)?
     var floatingPositionLockChanged: (() -> Void)?
     private var pendingFontScale: Double?
     private var fontSizePreviewTimer: Timer?
@@ -112,6 +113,7 @@ private struct SettingsView: View {
     @AppStorage(AppPreferences.statusBarModeKey) private var statusMode: StatusBarMode = .automatic
     @AppStorage(AppPreferences.floatingLyricsModeKey) private var floatingMode: FloatingLyricsMode = .vinyl
     @AppStorage(AppPreferences.floatingPositionLockKey) private var floatingPositionLocked = false
+    @AppStorage(AppPreferences.floatingLyricsShadowKey) private var floatingLyricsShadow = true
     @AppStorage("floatingLyrics.spaceBehavior") private var spaces = "allSpaces"
     @AppStorage("floatingLyrics.showOverFullScreen") private var fullScreen = true
     @AppStorage("floatingLyrics.showTranslation") private var translation = true
@@ -172,6 +174,7 @@ private struct SettingsView: View {
         .onChange(of: statusMode) { _ in changed() }
         .onChange(of: floatingMode) { _ in changed() }
         .onChange(of: floatingPositionLocked) { _ in actions.floatingPositionLockChanged?() }
+        .onChange(of: floatingLyricsShadow) { _ in actions.floatingLyricsShadowChanged?() }
         .onChange(of: spaces) { _ in changed() }
         .onChange(of: fullScreen) { _ in changed() }
         .onChange(of: translation) { _ in changed() }
@@ -322,6 +325,9 @@ private struct SettingsView: View {
                 if reduceTransparency {
                     Text("系统已开启降低透明度。").font(.caption).foregroundStyle(.secondary)
                 }
+                Toggle("浮窗阴影", isOn: $floatingLyricsShadow)
+                Text("关闭可减少 GPU 合成开销，歌词和黑胶动画仍可正常播放。")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Section("显示范围") {
                 Picker("桌面范围", selection: $spaces) {

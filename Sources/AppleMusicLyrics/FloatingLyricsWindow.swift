@@ -128,10 +128,14 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
         updateBackdropAppearance()
     }
 
-    private func updateBackdropAppearance() {
-        let opacity = NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency ? 1 : background.backgroundOpacity
+    private var effectiveBackdropOpacity: CGFloat {
+        NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency ? 1 : background.backgroundOpacity
+    }
+
+    func updateBackdropAppearance() {
+        let opacity = effectiveBackdropOpacity
         // With almost no backdrop, the window shadow traces individual glyphs and controls.
-        let castsShadow = opacity >= Self.minimumBackdropOpacityForShadow
+        let castsShadow = AppPreferences.floatingLyricsShowsShadow && opacity >= Self.minimumBackdropOpacityForShadow
         if panel.hasShadow != castsShadow {
             panel.hasShadow = castsShadow
         }
@@ -140,7 +144,7 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
     }
 
     private func updateFocusOutline(selected: Bool) {
-        let width: CGFloat = selected && !panel.hasShadow ? 1 : 0
+        let width: CGFloat = selected && effectiveBackdropOpacity < Self.minimumBackdropOpacityForShadow ? 1 : 0
         guard let layer = background.layer, layer.borderWidth != width else { return }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -765,14 +769,16 @@ private final class LyricsCanvasView: NSView {
         wantsLayer = true
         layerUsesCoreImageFilters = true
         lyricsLayer.isGeometryFlipped = true
+        // Clip before the feathered viewport mask so offscreen rows can be culled.
+        lyricsLayer.masksToBounds = true
         layer?.addSublayer(lyricsLayer)
         messageLayer.drawText = { [weak self] in
             guard let self, let message = self.message else { return }
-            self.drawMessage(message)
+            self.effectiveAppearance.performAsCurrentDrawingAppearance { self.drawMessage(message) }
         }
         plainTextLayer.drawText = { [weak self] in
             guard let self, let text = self.plainText else { return }
-            self.drawPlainText(text)
+            self.effectiveAppearance.performAsCurrentDrawingAppearance { self.drawPlainText(text) }
         }
         plainTextLayer.opacity = 0
         layer?.addSublayer(plainTextLayer)
@@ -815,14 +821,19 @@ private final class LyricsCanvasView: NSView {
         let radius = AnimationSpec.maximumContextBlurRadius * opacity
         guard radius != contextBlurRadius else { return }
         contextBlurRadius = radius
-        guard let visualActiveIndex, browsingIndex == nil,
-              !NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast else { return }
+        if radius > 0 {
+            layerUsesCoreImageFilters = true
+            guard visualActiveIndex != nil, browsingIndex == nil,
+                  !NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast else { return }
+        }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        for (index, row) in karaokeLayers.enumerated() where index != visualActiveIndex && !row.isHidden {
+        for (index, row) in karaokeLayers.enumerated() where radius == 0 || (index != visualActiveIndex && !row.isHidden) {
             row.setBlurRadius(radius)
         }
         CATransaction.commit()
+        // AppKit can use its normal render path once the last live blur is cleared.
+        if radius == 0 { layerUsesCoreImageFilters = false }
     }
 
     override func layout() {
@@ -986,9 +997,18 @@ private final class LyricsCanvasView: NSView {
         geometryLinesID = ids
         let width = contentWidth
         let font = activeFont
+        let contentsScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
         let customColor = AppPreferences.floatingLyricsTextColor
-        let lyricColor = customColor ?? .labelColor
-        let supplementaryColor = customColor ?? .secondaryLabelColor
+        var lyricColor = customColor ?? NSColor.labelColor
+        var supplementaryColor = customColor ?? NSColor.secondaryLabelColor
+        // Retained text layers draw outside the view's appearance context.
+        // Resolve the palette when building rows so later bitmap draws use the window's colors.
+        if customColor == nil {
+            effectiveAppearance.performAsCurrentDrawingAppearance {
+                lyricColor = lyricColor.usingColorSpace(.sRGB) ?? lyricColor
+                supplementaryColor = supplementaryColor.usingColorSpace(.sRGB) ?? supplementaryColor
+            }
+        }
         var cursor: CGFloat = 0
         lineCenters = []
         lineHeights = []
@@ -1005,7 +1025,7 @@ private final class LyricsCanvasView: NSView {
                 textColor: lyricColor,
                 supplementaryText: supplementaryText(for: line, originalFontSize: font.pointSize, color: supplementaryColor),
                 width: width,
-                contentsScale: window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2,
+                contentsScale: contentsScale,
                 featherWidth: AnimationSpec.featherWidth * scale
             )
             let height = max(40 * scale, lineLayer.textHeight + 18 * scale)
@@ -1237,9 +1257,9 @@ private final class LyricsCanvasView: NSView {
             let viewportDistance = abs(index - visibilityCenter)
             let wasRecentlyActive = previous.map { abs(index - $0) <= 1 } ?? false
             if viewportDistance <= visibleRadius + 2 || wasRecentlyActive {
-                lineLayer.prepareForDisplay()
+                lineLayer.prepareForDisplay(timed: index <= activeIndex, prewarm: index == activeIndex + 1)
             } else {
-                lineLayer.discardTimedGlyphs()
+                lineLayer.discardDisplayLayers()
             }
             let opacity: Float
             if index == activeIndex {
@@ -1680,6 +1700,18 @@ private class NoImplicitAnimationLayer: CALayer {
     override func action(forKey event: String) -> (any CAAction)? {
         nil
     }
+
+    func drawInTextCoordinates(_ context: CGContext, draw: () -> Void) {
+        context.saveGState()
+        defer { context.restoreGState() }
+        // TextKit uses a top-left origin. Off-tree glyph layers can be drawn
+        // before Core Animation knows the flipped geometry of their parent row.
+        if !contentsAreFlipped() {
+            context.translateBy(x: 0, y: bounds.height)
+            context.scaleBy(x: 1, y: -1)
+        }
+        draw()
+    }
 }
 
 private final class LyricsCanvasTextLayer: NoImplicitAnimationLayer {
@@ -1767,11 +1799,13 @@ private final class KaraokeTextLayer: NoImplicitAnimationLayer {
     }
 
     override func draw(in context: CGContext) {
-        drawGlyphs(
-            in: context,
-            glyphRange: textLayoutManager.glyphRange(for: textContainer),
-            at: .zero
-        )
+        drawInTextCoordinates(context) {
+            drawGlyphs(
+                in: context,
+                glyphRange: textLayoutManager.glyphRange(for: textContainer),
+                at: .zero
+            )
+        }
     }
 
     func drawGlyphs(in context: CGContext, glyphRange: NSRange, at origin: CGPoint) {
@@ -1854,11 +1888,13 @@ private final class KaraokeGlyphFragmentLayer: NoImplicitAnimationLayer {
     }
 
     override func draw(in context: CGContext) {
-        source.drawGlyphs(
-            in: context,
-            glyphRange: glyphRange,
-            at: CGPoint(x: -textRect.minX, y: -textRect.minY)
-        )
+        drawInTextCoordinates(context) {
+            source.drawGlyphs(
+                in: context,
+                glyphRange: glyphRange,
+                at: CGPoint(x: -textRect.minX, y: -textRect.minY)
+            )
+        }
     }
 
     func prepareForDisplay() {
@@ -2067,6 +2103,10 @@ private final class KaraokeLineLayer: NoImplicitAnimationLayer {
         super.init()
         isGeometryFlipped = true
         cornerRadius = 6
+        rasterizationScale = contentsScale
+        upcomingLayer.anchorPoint = .zero
+        upcomingLayer.position = .zero
+        upcomingLayer.isHidden = text.isEmpty
 
         if let supplementaryLayer {
             supplementaryLayer.anchorPoint = .zero
@@ -2177,7 +2217,6 @@ private final class KaraokeLineLayer: NoImplicitAnimationLayer {
                         TimedMask(start: fragmentStart, end: fragmentEnd, layer: mask)
                     )
                 }
-                addSublayer(unit)
                 timedUnits.append(TimedUnit(start: unitStart, layer: unit))
             }
         }
@@ -2242,21 +2281,52 @@ private final class KaraokeLineLayer: NoImplicitAnimationLayer {
         for timedUnit in timedUnits {
             timedUnit.layer.setLifted(
                 position >= timedUnit.start,
-                animated: animated
+                animated: animated && timedUnit.layer.superlayer != nil
             )
         }
     }
 
-    func prepareForDisplay() {
+    func prepareForDisplay(timed: Bool, prewarm: Bool) {
+        // An unsung row has the same text layout and color in a single layer.
+        // Prepare the next row's glyphs off-tree to avoid a hitch when it becomes active.
+        if timed || prewarm { prepareTimedGlyphs() }
+        guard timed else {
+            if prewarm {
+                for unit in timedUnits where unit.layer.superlayer != nil {
+                    unit.layer.removeAllAnimations()
+                    unit.layer.removeFromSuperlayer()
+                }
+            } else {
+                discardTimedGlyphs()
+            }
+            if upcomingLayer.superlayer == nil {
+                insertSublayer(upcomingLayer, at: 0)
+                upcomingLayer.prepareForDisplay()
+                supplementaryLayer?.prepareForDisplay()
+            }
+            return
+        }
+        if upcomingLayer.superlayer != nil { upcomingLayer.removeFromSuperlayer() }
+        if let first = timedUnits.first, first.layer.superlayer == nil {
+            timedUnits.forEach { addSublayer($0.layer) }
+            supplementaryLayer?.prepareForDisplay()
+        }
+    }
+
+    private func prepareTimedGlyphs() {
         guard !hasTimedGlyphs else { return }
         hasTimedGlyphs = true
         makeTimedGlyphs(self)
         if let lastProgressPosition { applyProgress(position: lastProgressPosition, animated: false) }
         timedUnits.forEach { $0.layer.prepareForDisplay() }
-        supplementaryLayer?.prepareForDisplay()
     }
 
-    func discardTimedGlyphs() {
+    func discardDisplayLayers() {
+        upcomingLayer.removeFromSuperlayer()
+        discardTimedGlyphs()
+    }
+
+    private func discardTimedGlyphs() {
         guard hasTimedGlyphs else { return }
         timedUnits.forEach { $0.layer.removeFromSuperlayer() }
         timedUnits.removeAll()
@@ -2280,9 +2350,12 @@ private final class KaraokeLineLayer: NoImplicitAnimationLayer {
         let radius = isHovered || isHidden ? 0 : blurRadius
         guard appliedBlurRadius != radius else { return }
         appliedBlurRadius = radius
-        filters = radius > 0
+        let blurred = radius > 0
+        filters = blurred
             ? CIFilter(name: "CIGaussianBlur", parameters: [kCIInputRadiusKey: radius]).map { [$0] }
             : nil
+        // Reuse the filtered row while it moves or fades. Keep the active glyphs live.
+        shouldRasterize = blurred
     }
 
     private var effectiveOpacity: Float {
