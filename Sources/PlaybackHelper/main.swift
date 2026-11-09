@@ -132,7 +132,7 @@ private func control(_ arguments: [String]) -> Int32 {
     }
     guard let script = NSAppleScript(source: """
         with timeout of 3 seconds
-            tell application "Music"
+            tell application id "com.apple.Music"
                 \(command)
             end tell
         end timeout

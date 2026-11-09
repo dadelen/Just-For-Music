@@ -36,6 +36,10 @@ final class MenuBarController: NSObject {
     private var lastControlState: PlayerState?
     private var localDismissMonitor: Any?
     private var outsideDismissMonitor: Any?
+    private var appearanceUpdatePending = false
+    var onLyricsAppearanceChanged: ((NSAppearance) -> Void)? {
+        didSet { updateLyricsAppearance() }
+    }
     var onShowLyrics: (() -> Void)?
     var onSettings: (() -> Void)?
     var onSeek: ((TimeInterval) -> Void)?
@@ -59,6 +63,12 @@ final class MenuBarController: NSObject {
         configurePlaybackItem(toggleStatusItem, symbol: "play.fill", label: "播放", action: #selector(togglePlayback))
         configurePlaybackItem(nextStatusItem, symbol: "forward.fill", label: "下一首", action: #selector(playNext))
         configureStatusItem()
+        // The lyrics item is hidden while the floating card is open.
+        if let button = toggleStatusItem.button {
+            let observer = StatusItemContentView()
+            observer.onAppearanceChanged = { [weak self] in self?.scheduleAppearanceUpdate() }
+            button.addSubview(observer)
+        }
     }
 
     private static func makeStatusItem(_ name: NSStatusItem.AutosaveName, length: CGFloat) -> NSStatusItem {
@@ -222,6 +232,7 @@ final class MenuBarController: NSObject {
         button.sendAction(on: .leftMouseUp)
         statusView.wantsLayer = true
         statusView.layer?.masksToBounds = true
+        statusView.onAppearanceChanged = { [weak self] in self?.scheduleAppearanceUpdate() }
         button.addSubview(statusView)
         statusView.addSubview(lyricButton)
         lyricButton.font = .menuBarFont(ofSize: 0)
@@ -230,6 +241,25 @@ final class MenuBarController: NSObject {
         lyricButton.addSubview(karaokeTitleView)
         NotificationCenter.default.addObserver(self, selector: #selector(screenParametersChanged), name: NSApplication.didChangeScreenParametersNotification, object: nil)
         reloadAppearance()
+    }
+
+    private func scheduleAppearanceUpdate() {
+        guard !appearanceUpdatePending else { return }
+        appearanceUpdatePending = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.appearanceUpdatePending = false
+            self.updateLyricsAppearance()
+        }
+    }
+
+    private func updateLyricsAppearance() {
+        let items = floatingLyricsVisible ? [toggleStatusItem, statusItem] : [statusItem, toggleStatusItem]
+        for item in items where item.isVisible {
+            guard let button = item.button, button.window != nil else { continue }
+            onLyricsAppearanceChanged?(button.effectiveAppearance.lyricsAppearance)
+            return
+        }
     }
 
     @objc private func statusButtonClicked(_ sender: NSStatusBarButton) {
@@ -307,6 +337,7 @@ final class MenuBarController: NSObject {
         guard floatingLyricsVisible != visible else { return }
         floatingLyricsVisible = visible
         updatePlaybackItems()
+        scheduleAppearanceUpdate()
         if !visible { displayLatestTitle() }
 
         visibilityTimer?.invalidate()
@@ -370,6 +401,7 @@ final class MenuBarController: NSObject {
             displayLatestTitle()
         }
         karaokeTitleView.reloadColors()
+        scheduleAppearanceUpdate()
     }
 
     deinit {
@@ -437,8 +469,28 @@ private final class PlayerPanel: NSPanel {
     override var canBecomeKey: Bool { true }
 }
 
+private extension NSAppearance {
+    var lyricsAppearance: NSAppearance {
+        // Resolve the menu bar's vibrancy into a light or dark palette for composited lyrics.
+        guard let variant = bestMatch(from: [.darkAqua, .aqua]), variant != name else { return self }
+        return NSAppearance(named: variant) ?? self
+    }
+}
+
 private final class StatusItemContentView: NSView {
+    var onAppearanceChanged: (() -> Void)?
+
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        onAppearanceChanged?()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        onAppearanceChanged?()
+    }
 }
 
 private final class MenuProgressSliderCell: NSSliderCell {
@@ -1072,7 +1124,7 @@ private final class KaraokeStatusTitleView: NSView {
         // The cached bitmap must use the status item's appearance, which can differ from the app's.
         var baseColor = inactiveColor
         var sungColor = activeColor
-        effectiveAppearance.performAsCurrentDrawingAppearance {
+        effectiveAppearance.lyricsAppearance.performAsCurrentDrawingAppearance {
             baseColor = inactiveColor.usingColorSpace(.sRGB) ?? inactiveColor
             sungColor = activeColor.usingColorSpace(.sRGB) ?? activeColor
         }

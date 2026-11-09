@@ -33,7 +33,7 @@ final class GlassSurface: NSView {
         layer?.backgroundColor = nil
         layer?.masksToBounds = true
         if NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency {
-            layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+            updateOpaqueBackgroundColor()
             addSubview(content)
         } else {
             #if compiler(>=6.2)
@@ -72,6 +72,12 @@ final class GlassSurface: NSView {
         effect.material = .hudWindow
         effect.blendingMode = .behindWindow
         effect.state = .active
+        if adjustableOpacity {
+            effect.wantsLayer = true
+            effect.layer?.cornerRadius = corner
+            effect.layer?.masksToBounds = true
+            layer?.masksToBounds = false
+        }
         addSubview(effect)
         addSubview(content)
         material = effect
@@ -86,6 +92,12 @@ final class GlassSurface: NSView {
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         if NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency {
+            updateOpaqueBackgroundColor()
+        }
+    }
+
+    private func updateOpaqueBackgroundColor() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
             layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
         }
     }

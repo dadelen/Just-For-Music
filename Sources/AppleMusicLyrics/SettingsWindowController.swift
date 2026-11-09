@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 
+@MainActor
 final class SettingsActions: ObservableObject {
     @Published var updateStatus = "更新源待配置"
     @Published var translationStatus = "等待歌词"
@@ -25,7 +26,8 @@ final class SettingsActions: ObservableObject {
         guard fontSizePreviewTimer == nil else { return }
         // Coalesce drag events, including those delivered in AppKit's tracking mode.
         let timer = Timer(timeInterval: 0.06, repeats: false) { [weak self] _ in
-            self?.flushFloatingLyricsFontSize()
+            // This timer is installed only on the main run loop, including during drag tracking.
+            MainActor.assumeIsolated { self?.flushFloatingLyricsFontSize() }
         }
         fontSizePreviewTimer = timer
         RunLoop.main.add(timer, forMode: .common)
@@ -42,6 +44,7 @@ final class SettingsActions: ObservableObject {
     }
 }
 
+@MainActor
 final class SettingsWindowController: NSObject, NSWindowDelegate {
     func windowDidBecomeKey(_ notification: Notification) { actions.isWindowKey = true }
     func windowDidResignKey(_ notification: Notification) { actions.isWindowKey = false }
@@ -342,7 +345,7 @@ private struct SettingsView: View {
             }
             Section("软件更新") {
                 Text(actions.updateStatus).foregroundStyle(.secondary)
-                Button(actions.checkingUpdates ? "正在检查…" : "检查更新…") { actions.checkUpdates?() }
+                Button("检查更新") { actions.checkUpdates?() }
                     .disabled(actions.checkingUpdates || !UpdateService.isConfigured)
             }
             Section("诊断日志") {

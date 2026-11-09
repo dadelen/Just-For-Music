@@ -40,6 +40,8 @@ enum UpdateServiceError: LocalizedError, Equatable {
     case unconfigured
     case invalidCurrentVersion
     case invalidResponse
+    case rateLimited
+    case releaseRequestFailed(Int)
     case releaseDataInvalid
     case downloadUnavailable
     case checksumUnavailable
@@ -51,6 +53,8 @@ enum UpdateServiceError: LocalizedError, Equatable {
         case .unconfigured: return "自有 GitHub 更新源待配置。"
         case .invalidCurrentVersion: return "无法读取当前应用版本。"
         case .invalidResponse: return "更新服务器返回了无效响应。"
+        case .rateLimited: return "GitHub 暂时限制了更新查询，请稍后重试。"
+        case .releaseRequestFailed(let status): return "GitHub 更新查询失败（HTTP \(status)）。"
         case .releaseDataInvalid: return "无法解析最新版本信息。"
         case .downloadUnavailable: return "最新版本没有可用的 macOS 安装镜像。"
         case .checksumUnavailable: return "无法验证更新文件的完整性。"
@@ -69,6 +73,7 @@ final class UpdateService: @unchecked Sendable {
     static var isConfigured: Bool { latestReleaseURL != nil }
 
     private let session: URLSession
+    private let releaseURL: URL?
     private let currentVersion: SemanticVersion?
     private let downloadsDirectory: URL
 
@@ -77,9 +82,11 @@ final class UpdateService: @unchecked Sendable {
         currentVersion: String? = Bundle.main.object(
             forInfoDictionaryKey: "CFBundleShortVersionString"
         ) as? String,
-        downloadsDirectory: URL? = nil
+        downloadsDirectory: URL? = nil,
+        releaseURL: URL? = UpdateService.latestReleaseURL
     ) {
         self.session = session
+        self.releaseURL = releaseURL
         self.currentVersion = currentVersion.flatMap(SemanticVersion.init)
         self.downloadsDirectory = downloadsDirectory
             ?? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
@@ -87,13 +94,23 @@ final class UpdateService: @unchecked Sendable {
     }
 
     func checkForUpdate() async throws -> AppUpdate? {
-        guard let endpoint = Self.latestReleaseURL else { throw UpdateServiceError.unconfigured }
+        guard let endpoint = releaseURL else { throw UpdateServiceError.unconfigured }
         guard currentVersion != nil else { throw UpdateServiceError.invalidCurrentVersion }
         var request = request(for: endpoint)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
 
         let (data, response) = try await session.data(for: request)
-        try Self.validate(response)
+        guard let http = response as? HTTPURLResponse else { throw UpdateServiceError.invalidResponse }
+        if http.statusCode == 429 || (http.statusCode == 403 &&
+            (http.value(forHTTPHeaderField: "X-RateLimit-Remaining") == "0"
+             || http.value(forHTTPHeaderField: "Retry-After") != nil)) {
+            throw UpdateServiceError.rateLimited
+        }
+        guard (200...299).contains(http.statusCode) else {
+            throw UpdateServiceError.releaseRequestFailed(http.statusCode)
+        }
         return try availableUpdate(from: data)
     }
 

@@ -7,6 +7,12 @@ struct TranslationGroup: Sendable {
 }
 
 enum LyricsLanguageDetector {
+    private static let hanRuns = try! NSRegularExpression(pattern: #"\p{Han}+"#)
+    private static let kana = try! NSRegularExpression(pattern: #"[\p{Hiragana}\p{Katakana}]"#)
+    private static let latin = try! NSRegularExpression(pattern: #"\p{Latin}"#)
+    private static let nonHanLetters = try! NSRegularExpression(pattern: #"(?=\p{L})[^\p{Han}]"#)
+    private static let nonHanKanaLetters = try! NSRegularExpression(pattern: #"(?=\p{L})[^\p{Han}\p{Hiragana}\p{Katakana}]"#)
+
     enum SongLanguage: Equatable, Sendable {
         case chinese, foreign, uncertain
     }
@@ -22,9 +28,9 @@ enum LyricsLanguageDetector {
         }
         guard !lines.isEmpty else { return .uncertain }
         let sample = lines.joined(separator: "\n")
-        let containsHan = sample.range(of: #"\p{Han}"#, options: .regularExpression) != nil
-        let containsKana = sample.range(of: #"[\p{Hiragana}\p{Katakana}]"#, options: .regularExpression) != nil
-        let hasNonHanLetters = sample.range(of: #"(?=\p{L})[^\p{Han}]"#, options: .regularExpression) != nil
+        let containsHan = matches(hanRuns, in: sample)
+        let containsKana = matches(kana, in: sample)
+        let hasNonHanLetters = matches(nonHanLetters, in: sample)
         // Short strings made entirely of Han characters may be Chinese or Japanese kanji.
         if containsHan, !hasNonHanLetters,
            sample.unicodeScalars.filter({ CharacterSet.letters.contains($0) }).count < 24 {
@@ -44,11 +50,11 @@ enum LyricsLanguageDetector {
             var ambiguousHanCount = 0
             var foreignCount = 0
             for line in lines {
-                let hasHan = line.range(of: #"\p{Han}"#, options: .regularExpression) != nil
-                let hasKana = line.range(of: #"[\p{Hiragana}\p{Katakana}]"#, options: .regularExpression) != nil
+                let hasHan = matches(hanRuns, in: line)
+                let hasKana = matches(kana, in: line)
                 if hasHan, !hasKana {
                     ambiguousHanCount += 1
-                } else if let (language, confidence) = hypothesis(line), !isChinese(language), confidence >= 0.65 {
+                } else if let (language, confidence) = hypothesis(line, using: recognizer), !isChinese(language), confidence >= 0.65 {
                     foreignCount += 1
                 }
             }
@@ -61,15 +67,18 @@ enum LyricsLanguageDetector {
                        songLanguage: SongLanguage? = nil) -> [TranslationGroup] {
         guard (songLanguage ?? Self.songLanguage(for: document)) == .foreign else { return [] }
         let textLines = document.lines.filter { !$0.isGap && $0.text.rangeOfCharacter(from: .letters) != nil }.map(\.text)
-        let context = hypothesis(textLines.joined(separator: "\n"))
-        let predictions = Dictionary(uniqueKeysWithValues: Set(textLines).compactMap { text in
-            hypothesis(text).map { (text, $0) }
-        })
+        let recognizer = NLLanguageRecognizer()
+        let context = hypothesis(textLines.joined(separator: "\n"), using: recognizer)
+        let fallbackScript = context.flatMap(contextScript)
+        var predictions: [String: (NLLanguage, Double)?] = [:]
         var groups: [String: [Int: String]] = [:]
         for (index, line) in document.lines.enumerated() {
             guard lineIDs?.contains(index) != false, !line.isGap, !line.hasPreferredOriginalTranslation,
-                  let language = sourceLanguage(for: line.text, prediction: predictions[line.text],
-                                                context: context) else { continue }
+                  line.text.rangeOfCharacter(from: .letters) != nil else { continue }
+            let prediction = predictions[line.text] ?? hypothesis(line.text, using: recognizer)
+            predictions.updateValue(prediction, forKey: line.text)
+            guard let language = sourceLanguage(for: line.text, prediction: prediction, context: context,
+                                                fallbackScript: fallbackScript, recognizer: recognizer) else { continue }
             groups[language, default: [:]][index] = line.text
         }
         return groups.keys.sorted().map { TranslationGroup(language: $0, lines: groups[$0] ?? [:]) }
@@ -79,28 +88,36 @@ enum LyricsLanguageDetector {
         language == .simplifiedChinese || language == .traditionalChinese
     }
 
-    private static func hypothesis(_ text: String) -> (NLLanguage, Double)? {
-        let recognizer = NLLanguageRecognizer()
+    private static func matches(_ regex: NSRegularExpression, in text: String) -> Bool {
+        regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
+    }
+
+    private static func hypothesis(_ text: String, using recognizer: NLLanguageRecognizer) -> (NLLanguage, Double)? {
+        recognizer.reset()
         recognizer.processString(text)
         return recognizer.languageHypotheses(withMaximum: 3).max { $0.value < $1.value }.map { ($0.key, $0.value) }
     }
 
     private static func sourceLanguage(for text: String, prediction: (NLLanguage, Double)?,
-                                       context: (NLLanguage, Double)?) -> String? {
-        guard text.rangeOfCharacter(from: .letters) != nil else { return nil }
-        let hasKana = text.range(of: #"[\p{Hiragana}\p{Katakana}]"#, options: .regularExpression) != nil
-        let hasLatin = text.range(of: #"\p{Latin}"#, options: .regularExpression) != nil
-        let hanRuns = text.matches(of: try! Regex(#"\p{Han}+"#)).map { String($0.output[0].substring ?? "") }
+                                       context: (NLLanguage, Double)?, fallbackScript: NSRegularExpression?,
+                                       recognizer: NLLanguageRecognizer) -> String? {
+        let hasKana = matches(kana, in: text)
+        let hasLatin = matches(latin, in: text)
+        let hanRanges = hanRuns.matches(in: text, range: NSRange(text.startIndex..., in: text))
         // Inspect Han runs with the recognizer; Han presence alone does not identify Chinese.
-        let hasOtherLetters = text.range(of: #"(?=\p{L})[^\p{Han}\p{Hiragana}\p{Katakana}]"#, options: .regularExpression) != nil
-        if hasOtherLetters || hasKana {
-            for run in hanRuns where run.count >= 4 {
-                if let (language, confidence) = hypothesis(run), isChinese(language), confidence >= 0.85 {
+        let hasOtherLetters = matches(nonHanKanaLetters, in: text)
+        if (hasOtherLetters || hasKana), !hanRanges.isEmpty {
+            let utf16Text = text as NSString
+            for match in hanRanges {
+                let run = utf16Text.substring(with: match.range)
+                guard run.count >= 4 else { continue }
+                if let (language, confidence) = hypothesis(run, using: recognizer),
+                   isChinese(language), confidence >= 0.85 {
                     return nil
                 }
             }
         }
-        if hasOtherLetters, !hanRuns.isEmpty, !hasKana {
+        if hasOtherLetters, !hanRanges.isEmpty, !hasKana {
             // Mixed Han/foreign lines have ambiguous short runs, so conservatively skip them.
             return nil
         }
@@ -117,12 +134,16 @@ enum LyricsLanguageDetector {
             if confidence >= 0.65 { return language.rawValue }
         }
         // Short interjections often have no reliable per-line language prediction.
-        guard hanRuns.isEmpty, let (language, confidence) = context,
-              confidence >= 0.8, !isChinese(language),
+        guard hanRanges.isEmpty, let (language, _) = context,
+              let fallbackScript, !matches(fallbackScript, in: text) else { return nil }
+        return language.rawValue
+    }
+
+    private static func contextScript(_ context: (NLLanguage, Double)) -> NSRegularExpression? {
+        let (language, confidence) = context
+        guard confidence >= 0.8, !isChinese(language),
               let script = Locale.Language(identifier: language.rawValue).script?.identifier else { return nil }
         let letterScript = script == "Kore" ? "Hangul" : script
-        guard let mismatchedLetter = try? NSRegularExpression(pattern: "(?=\\p{L})[^\\p{\(letterScript)}]"),
-              mismatchedLetter.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) == nil else { return nil }
-        return language.rawValue
+        return try? NSRegularExpression(pattern: "(?=\\p{L})[^\\p{\(letterScript)}]")
     }
 }

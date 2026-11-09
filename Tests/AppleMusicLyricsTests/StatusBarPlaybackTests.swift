@@ -192,6 +192,8 @@ final class StatusBarPlaybackTests: XCTestCase {
         let fields = Mirror(reflecting: controller).children
         let title = try XCTUnwrap(fields.first { $0.label == "karaokeTitleView" }?.value as? NSView)
         let button = try XCTUnwrap(fields.first { $0.label == "lyricButton" }?.value as? NSButton)
+        let statusItem = try XCTUnwrap(fields.first { $0.label == "statusItem" }?.value as? NSStatusItem)
+        let statusButton = try XCTUnwrap(statusItem.button)
         let systemFont = NSFont.menuBarFont(ofSize: 0)
         XCTAssertEqual(button.font, systemFont)
         XCTAssertEqual(Mirror(reflecting: title).children.first { $0.label == "font" }?.value as? NSFont, systemFont)
@@ -199,7 +201,7 @@ final class StatusBarPlaybackTests: XCTestCase {
         let line = LyricLine(time: 0, text: "Test lyrics", words: [LyricWord(text: "Test lyrics", start: 0, end: 1)])
         let lyrics = LyricsDocument(lines: [line], plainText: nil, source: "test", isSynced: true, wordTiming: .exact)
         func brightness(_ appearance: NSAppearance.Name, position: TimeInterval) throws -> Double {
-            title.appearance = try XCTUnwrap(NSAppearance(named: appearance))
+            statusButton.appearance = try XCTUnwrap(NSAppearance(named: appearance))
             let track = TrackInfo(title: "Test", artist: "", album: "", duration: 30, position: position, state: .paused)
             controller.updateKaraokeProgress(track: track, lyrics: lyrics)
             let width = Int(title.bounds.width * 2)
@@ -229,8 +231,8 @@ final class StatusBarPlaybackTests: XCTestCase {
         }
 
         for position: TimeInterval in [0, 2] {
-            XCTAssertLessThan(try brightness(.aqua, position: position), 0.45)
-            XCTAssertGreaterThan(try brightness(.darkAqua, position: position), 0.65)
+            XCTAssertLessThan(try brightness(.vibrantLight, position: position), 0.45)
+            XCTAssertGreaterThan(try brightness(.vibrantDark, position: position), 0.65)
         }
         AppPreferences.menuBarLyricsActiveColor = NSColor(srgbRed: 0.8, green: 0.2, blue: 0.2, alpha: 1)
         AppPreferences.menuBarLyricsInactiveColor = NSColor(srgbRed: 0.4, green: 0.2, blue: 0.2, alpha: 1)

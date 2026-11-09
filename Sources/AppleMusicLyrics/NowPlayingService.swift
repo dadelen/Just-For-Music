@@ -6,7 +6,7 @@ final class NowPlayingService: @unchecked Sendable {
     private let musicBundleIdentifier = "com.apple.Music"
 
     private lazy var playerStateScript = NSAppleScript(source: """
-        tell application "Music"
+        tell application id "com.apple.Music"
             if player state is stopped then
                 return "STOPPED"
             end if

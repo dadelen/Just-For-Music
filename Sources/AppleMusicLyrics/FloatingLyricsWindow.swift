@@ -114,6 +114,12 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
 
     func resetPlaybackClock() { canvas.resetPlaybackClock() }
 
+    func setMenuBarAppearance(_ appearance: NSAppearance) {
+        guard panel.appearance?.name != appearance.name else { return }
+        panel.appearance = appearance
+        for child in panel.childWindows ?? [] { child.appearance = appearance }
+    }
+
     func reloadLyricsColor() {
         let color = AppPreferences.floatingLyricsTextColor
         title.textColor = color ?? .labelColor
@@ -247,6 +253,7 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
         if panel.ignoresMouseEvents && panel.isVisible {
             let child = windowButtonPanel
             if closeButton.window === panel, let content = child.contentView {
+                child.appearance = panel.appearance
                 child.level = panel.level
                 child.collectionBehavior = panel.collectionBehavior
                 child.alphaValue = panel.alphaValue
@@ -282,6 +289,7 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
         let detached = panel.ignoresMouseEvents && panel.isVisible && mode == .vinyl && vinyl.allowsPlaybackControl
         if detached, !vinyl.isNeedleButtonDetached, let content = needleButtonPanel.contentView {
             let child = needleButtonPanel
+            child.appearance = panel.appearance
             child.level = panel.level
             child.collectionBehavior = panel.collectionBehavior
             child.alphaValue = panel.alphaValue

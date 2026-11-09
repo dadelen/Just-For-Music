@@ -161,7 +161,10 @@ final class PlaybackMonitor {
         process.standardError = FileHandle.nullDevice
         output.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
-            guard !data.isEmpty else { return }
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
             DispatchQueue.main.async {
                 guard let self, self.helperOutput?.fileHandleForReading === handle else { return }
                 self.consume(data)
@@ -181,6 +184,7 @@ final class PlaybackMonitor {
             helperInput = input
             helperOutput = output
         } catch {
+            output.fileHandleForReading.readabilityHandler = nil
             onUpdate?(.failure(error))
         }
     }

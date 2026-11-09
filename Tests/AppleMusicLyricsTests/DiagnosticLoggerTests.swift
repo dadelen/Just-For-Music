@@ -24,6 +24,7 @@ final class DiagnosticLoggerTests: XCTestCase {
         let logger = DiagnosticLogger(directoryURL: directory, maximumBytes: 1)
         logger.info("older entry")
         logger.info("newer entry")
+        logger.flush()
 
         let previous = try String(contentsOf: logger.previousLogFileURL, encoding: .utf8)
         XCTAssertTrue(previous.contains("older entry"))

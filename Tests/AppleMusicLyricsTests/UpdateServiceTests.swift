@@ -67,6 +67,25 @@ final class UpdateServiceTests: XCTestCase {
         XCTAssertNil(UpdateService.expectedSHA256(in: contents, for: "missing.dmg"))
     }
 
+    func testPublicGitHubUpdateAndVerifiedDownloadWhenEnabled() async throws {
+        guard ProcessInfo.processInfo.environment["JFM_UPDATE_INTEGRATION"] == "1" else {
+            throw XCTSkip("Set JFM_UPDATE_INTEGRATION=1 to check and download the public release")
+        }
+        let endpoint = try XCTUnwrap(URL(string: "https://api.github.com/repos/dadelen/Just-For-Music/releases/latest"))
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let service = UpdateService(currentVersion: "1.0.1", downloadsDirectory: directory, releaseURL: endpoint)
+        let result = try await service.checkForUpdate()
+        let update = try XCTUnwrap(result)
+        let downloaded = try await service.download(update)
+        XCTAssertEqual(downloaded.lastPathComponent, update.assetName)
+        XCTAssertTrue(FileManager.default.isReadableFile(atPath: downloaded.path))
+
+        let current = UpdateService(currentVersion: update.version.description, releaseURL: endpoint)
+        let alreadyCurrent = try await current.checkForUpdate()
+        XCTAssertNil(alreadyCurrent)
+    }
+
     private func releaseJSON(
         tag: String,
         prerelease: Bool = false,

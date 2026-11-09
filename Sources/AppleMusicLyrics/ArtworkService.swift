@@ -55,7 +55,7 @@ final class ArtworkService {
         guard !NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Music").isEmpty else { return nil }
         let script = NSAppleScript(source: """
         with timeout of 3 seconds
-            tell application "Music"
+            tell application id "com.apple.Music"
                 set t to current track
                 return {name of t, artist of t, duration of t, raw data of artwork 1 of t}
             end tell

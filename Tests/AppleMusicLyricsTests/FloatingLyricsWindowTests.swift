@@ -224,7 +224,7 @@ final class FloatingLyricsWindowTests: XCTestCase {
         XCTAssertFalse(canvas.needsDisplay)
     }
 
-    func testFloatingLyricsKeepTheWindowAppearanceWhenSwitchingSongs() throws {
+    func testFloatingLyricsFollowNativeMenuBarAppearanceWhenSwitchingSongs() async throws {
         _ = NSApplication.shared
         let originalColor = AppPreferences.floatingLyricsTextColor
         defer { AppPreferences.floatingLyricsTextColor = originalColor }
@@ -232,6 +232,13 @@ final class FloatingLyricsWindowTests: XCTestCase {
 
         let controller = FloatingLyricsController()
         let canvas = try XCTUnwrap(Mirror(reflecting: controller).children.first { $0.label == "canvas" }?.value as? NSView)
+        let menuBar = MenuBarController(floatingLyricsVisible: true)
+        let fields = Mirror(reflecting: menuBar).children
+        let lyricsItem = try XCTUnwrap(fields.first { $0.label == "statusItem" }?.value as? NSStatusItem)
+        let toggleItem = try XCTUnwrap(fields.first { $0.label == "toggleStatusItem" }?.value as? NSStatusItem)
+        let toggle = try XCTUnwrap(toggleItem.button)
+        XCTAssertFalse(lyricsItem.isVisible)
+        menuBar.onLyricsAppearanceChanged = { controller.setMenuBarAppearance($0) }
         defer { controller.setVisible(false, animated: false) }
         func showTrack(_ title: String) {
             let track = TrackInfo(title: title, artist: "", album: "", duration: 30, position: 1, state: .paused)
@@ -253,15 +260,23 @@ final class FloatingLyricsWindowTests: XCTestCase {
 
         let light = try XCTUnwrap(NSAppearance(named: .aqua))
         let dark = try XCTUnwrap(NSAppearance(named: .darkAqua))
-        for (appearance, ambient, expectsLightText) in [(dark, light, true), (light, dark, false)] {
-            canvas.appearance = appearance
+        let appearances: [(NSAppearance.Name, NSAppearance, NSAppearance)] = [
+            (.vibrantDark, dark, light),
+            (.vibrantLight, light, dark)
+        ]
+        for (menuBarAppearance, cardAppearance, ambient) in appearances {
+            toggle.appearance = try XCTUnwrap(NSAppearance(named: menuBarAppearance))
+            await withCheckedContinuation { continuation in
+                DispatchQueue.main.async { continuation.resume() }
+            }
+            XCTAssertEqual(canvas.effectiveAppearance.name, cardAppearance.name)
             for title in ["First track", "Second track"] {
                 ambient.performAsCurrentDrawingAppearance { showTrack(title) }
                 let colors = try textColors()
                 ambient.performAsCurrentDrawingAppearance {
                     for color in colors {
                         let brightness = color.usingColorSpace(.sRGB)?.redComponent ?? -1
-                        if expectsLightText { XCTAssertGreaterThan(brightness, 0.65) }
+                        if cardAppearance == dark { XCTAssertGreaterThan(brightness, 0.65) }
                         else { XCTAssertLessThan(brightness, 0.4) }
                     }
                 }

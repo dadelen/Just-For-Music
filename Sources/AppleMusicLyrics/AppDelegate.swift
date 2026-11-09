@@ -93,6 +93,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings.actions.checkUpdates = { [weak self] in
             self?.checkForUpdates(manual: true)
         }
+        menuBar.onLyricsAppearanceChanged = { [weak self] in self?.floating.setMenuBarAppearance($0) }
         menuBar.onSettings = { [weak self] in self?.settings.show() }
         menuBar.onShowLyrics = { [weak self] in self?.floating.showFromPlayer() }
         NotificationCenter.default.addObserver(self, selector: #selector(preferencesChanged), name: AppPreferences.didChange, object: nil)
@@ -286,6 +287,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         needlePlaybackTask?.cancel()
         lyricsTask?.cancel()
         playbackMonitor.stop()
+        logger.flush()
     }
 
     // MARK: - Updates
@@ -299,7 +301,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         guard updateTask == nil else { return }
 
-        if manual { settings.actions.checkingUpdates = true }
+        settings.actions.checkingUpdates = true
+        settings.actions.updateStatus = "正在查询 GitHub 最新版本…"
         updateTask = Task { [weak self, updateService] in
             do {
                 let update = try await updateService.checkForUpdate()
@@ -310,21 +313,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.settings.actions.checkingUpdates = false
                 if let update {
                     let version = update.version.description
+                    self.settings.actions.updateStatus = "发现新版本 \(version)"
                     if manual || AppPreferences.lastNotifiedUpdateVersion != version {
                         AppPreferences.lastNotifiedUpdateVersion = version
                         self.present(update: update)
                     }
-                } else if manual {
-                    self.presentMessage(
-                        title: "已是最新版本",
-                        message: "当前安装的 \(AppIdentity.name) 已是最新版本。"
-                    )
+                } else {
+                    let installed = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+                    self.settings.actions.updateStatus = installed.map { "当前版本 \($0) 已是最新版本。" } ?? "当前已是最新版本。"
                 }
             } catch {
                 guard !Task.isCancelled else { return }
                 guard let self else { return }
                 self.updateTask = nil
                 self.settings.actions.checkingUpdates = false
+                self.settings.actions.updateStatus = "检查失败：\(error.localizedDescription)"
                 self.logger.warning("Update check failed: \(error.localizedDescription)")
                 if manual {
                     self.presentMessage(
@@ -358,6 +361,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func download(_ update: AppUpdate) {
         settings.actions.checkingUpdates = true
+        settings.actions.updateStatus = "正在下载并校验 \(update.version)…"
         updateTask = Task { [weak self, updateService] in
             do {
                 let fileURL = try await updateService.download(update)
@@ -365,6 +369,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let self else { return }
                 self.updateTask = nil
                 self.settings.actions.checkingUpdates = false
+                self.settings.actions.updateStatus = "已下载并校验 \(update.version)"
                 NSWorkspace.shared.activateFileViewerSelecting([fileURL])
                 self.presentMessage(
                     title: "更新已下载",
@@ -375,6 +380,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let self else { return }
                 self.updateTask = nil
                 self.settings.actions.checkingUpdates = false
+                self.settings.actions.updateStatus = "下载失败：\(error.localizedDescription)"
                 self.logger.warning("Update download failed: \(error.localizedDescription)")
                 self.presentMessage(title: "下载更新失败", message: error.localizedDescription)
             }

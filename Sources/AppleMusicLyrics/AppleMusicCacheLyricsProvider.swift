@@ -25,21 +25,22 @@ final class AppleMusicCacheLyricsProvider: @unchecked Sendable {
         self.databaseURL = root.appendingPathComponent("Cache.db")
     }
 
-    func lyrics(for track: TrackInfo) -> LyricsDocument {
-        guard !Task.isCancelled else { return .empty }
+    func lyrics(for track: TrackInfo, isCancelled: () -> Bool = { Task.isCancelled }) -> LyricsDocument {
+        guard !isCancelled() else { return .empty }
         var best: (match: TrackMetadataMatch, song: CatalogSong)?
         var readableCandidates = 0
         var decodedResponses = 0
         var songsExamined = 0
         var decodeFailures = 0
 
-        let candidates = candidates()
+        let candidates = candidates(isCancelled: isCancelled)
+        guard !isCancelled() else { return .empty }
         logger.info(
             "Lyrics lookup started; track=\(track.displayName); duration=\(Int(track.duration.rounded())); "
                 + "candidates=\(candidates.count)"
         )
         for candidate in candidates {
-            guard !Task.isCancelled else { return .empty }
+            guard !isCancelled() else { return .empty }
             guard let data = candidate.data() else {
                 continue
             }
@@ -65,6 +66,7 @@ final class AppleMusicCacheLyricsProvider: @unchecked Sendable {
             if best?.match.score ?? 0 >= 180 { break }
         }
 
+        guard !isCancelled() else { return .empty }
         logger.info(
             "Lyrics cache scan finished; readable=\(readableCandidates); decoded=\(decodedResponses); "
                 + "decodeFailures=\(decodeFailures); songs=\(songsExamined); "
@@ -118,9 +120,9 @@ final class AppleMusicCacheLyricsProvider: @unchecked Sendable {
 
     // MARK: - Cache index
 
-    private func candidates() -> [CacheCandidate] {
+    private func candidates(isCancelled: () -> Bool) -> [CacheCandidate] {
         let indexed = indexedCandidates()
-        guard !Task.isCancelled else { return [] }
+        guard !isCancelled() else { return [] }
         var candidates = indexed
         var indexedPaths = Set(indexed.compactMap(\.fileURL))
 

@@ -7,7 +7,7 @@ final class DiagnosticLogger: @unchecked Sendable {
     private let fileManager: FileManager
     private let directoryURL: URL
     private let maximumBytes: UInt64
-    private let lock = NSLock()
+    private let queue = DispatchQueue(label: "music.diagnostics", qos: .utility)
     private let formatter: ISO8601DateFormatter
 
     let logFileURL: URL
@@ -53,30 +53,37 @@ final class DiagnosticLogger: @unchecked Sendable {
     }
 
     func contents() -> String {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let data = try? Data(contentsOf: logFileURL),
-              let text = String(data: data, encoding: .utf8) else {
-            return "No diagnostic log has been written yet.\n\nExpected location:\n\(logFileURL.path)"
+        queue.sync {
+            guard let data = try? Data(contentsOf: logFileURL),
+                  let text = String(data: data, encoding: .utf8) else {
+                return "No diagnostic log has been written yet.\n\nExpected location:\n\(logFileURL.path)"
+            }
+            return text
         }
-        return text
     }
 
     /// Ensures Finder actions have a real file to select, even before an event is logged.
     func prepareFile() {
-        lock.lock()
-        defer { lock.unlock() }
-        prepareFileLocked()
+        queue.sync { ensureFileExists() }
     }
 
-    private func append(level: String, message: String) {
-        lock.lock()
-        defer { lock.unlock() }
+    func flush() { queue.sync {} }
 
-        prepareFileLocked()
-        rotateIfNeededLocked()
+    private func append(level: String, message: String) {
+        let timestamp = Date()
+        queue.async { self.write(level: level, message: message, timestamp: timestamp) }
+    }
+
+    private func write(level: String, message: String, timestamp: Date) {
+        if let attributes = try? fileManager.attributesOfItem(atPath: logFileURL.path) {
+            if let size = attributes[.size] as? NSNumber, size.uint64Value >= maximumBytes {
+                rotate()
+            }
+        } else {
+            ensureFileExists()
+        }
         let sanitized = message.replacingOccurrences(of: "\n", with: " ")
-        let line = "[\(formatter.string(from: Date()))] [\(level)] \(sanitized)\n"
+        let line = "[\(formatter.string(from: timestamp))] [\(level)] \(sanitized)\n"
         guard let data = line.data(using: .utf8),
               let handle = try? FileHandle(forWritingTo: logFileURL) else {
             return
@@ -90,7 +97,7 @@ final class DiagnosticLogger: @unchecked Sendable {
         }
     }
 
-    private func prepareFileLocked() {
+    private func ensureFileExists() {
         try? fileManager.createDirectory(
             at: directoryURL,
             withIntermediateDirectories: true
@@ -100,12 +107,7 @@ final class DiagnosticLogger: @unchecked Sendable {
         }
     }
 
-    private func rotateIfNeededLocked() {
-        guard let attributes = try? fileManager.attributesOfItem(atPath: logFileURL.path),
-              let size = attributes[.size] as? NSNumber,
-              size.uint64Value >= maximumBytes else {
-            return
-        }
+    private func rotate() {
         try? fileManager.removeItem(at: previousLogFileURL)
         do {
             try fileManager.moveItem(at: logFileURL, to: previousLogFileURL)
