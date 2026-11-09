@@ -2,10 +2,12 @@
 
 English | [简体中文](README.zh-CN.md)
 
-## Demo
+## 🎬 Demo
 https://github.com/dadelen/Just-For-Music/blob/main/Maya-export.mp4
-## Demo
+## 🎬 Demo
 https://github.com/dadelen/Just-For-Music/blob/main/Maya-export1.mp4
+
+
 A macOS menu bar companion for Apple Music with synced lyrics, playback controls, and a floating lyrics window. [Download for Apple Silicon](https://github.com/dadelen/Just-For-Music/releases/latest) · [Changelog](CHANGELOG.md)
 
 The existing read-only Music cache provider, TTML parser and playback monitor remain the core.
