@@ -3,6 +3,17 @@ import XCTest
 @testable import AppleMusicLyrics
 
 final class OnlineTranslationTests: XCTestCase {
+    func testSavedOnlineSelectionUsesLocalTranslationWhileFeatureIsPaused() {
+        let defaults = UserDefaults.standard
+        let key = AppPreferences.translationProviderKey
+        let original = defaults.object(forKey: key)
+        defer { defaults.set(original, forKey: key) }
+        defaults.set(TranslationProvider.online.rawValue, forKey: key)
+
+        XCTAssertEqual(AppPreferences.translationProvider, .local)
+        XCTAssertEqual(defaults.string(forKey: key), TranslationProvider.online.rawValue)
+    }
+
     func testModelsUsesTheSameServiceBaseAndReturnsDistinctModelIDs() async throws {
         let session = Self.makeSession()
         defer { session.invalidateAndCancel() }

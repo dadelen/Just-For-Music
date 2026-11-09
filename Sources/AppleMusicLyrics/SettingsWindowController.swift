@@ -123,6 +123,7 @@ private struct SettingsView: View {
     @AppStorage("floatingLyrics.showTransliteration") private var transliteration = true
     @AppStorage(AppPreferences.automaticTranslationKey) private var automaticTranslation = false
     @AppStorage(AppPreferences.translationProviderKey) private var translationProvider: TranslationProvider = .local
+    private var usesOnlineTranslation: Bool { AppPreferences.onlineTranslationAvailable && translationProvider == .online }
     @State private var installedSourceLanguages: [String]?
     @AppStorage("lyrics.smoothScrolling") private var smooth = true
     @AppStorage("lyrics.gapAnimation") private var gaps = true
@@ -136,7 +137,7 @@ private struct SettingsView: View {
     @State private var editingGlassTransparency = false
 
     private var languagePackCheck: Int? {
-        guard selection == .translation, actions.isWindowKey, translationProvider == .local, supportsTranslation else { return nil }
+        guard selection == .translation, actions.isWindowKey, !usesOnlineTranslation, supportsTranslation else { return nil }
         return actions.languagePackRevision
     }
 
@@ -233,15 +234,17 @@ private struct SettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("自动翻译") {
-                Picker("翻译方式", selection: $translationProvider) {
-                    Text("系统本地").tag(TranslationProvider.local)
-                    Text("联网大模型").tag(TranslationProvider.online)
+                if AppPreferences.onlineTranslationAvailable {
+                    Picker("翻译方式", selection: $translationProvider) {
+                        Text("系统本地").tag(TranslationProvider.local)
+                        Text("联网大模型").tag(TranslationProvider.online)
+                    }
                 }
                 Toggle("自动翻译外语歌词", isOn: $automaticTranslation)
-                    .disabled(translationProvider == .local && !supportsTranslation)
+                    .disabled(!usesOnlineTranslation && !supportsTranslation)
                 Text("翻译可能不准确，仅供参考。")
                     .font(.caption).foregroundStyle(.secondary)
-                if supportsTranslation || translationProvider == .online {
+                if supportsTranslation || usesOnlineTranslation {
                     LabeledContent("目标语言", value: "简体中文")
                     Text("在桌面歌词显示译文时运行。以中文为主的歌曲及中外文混合行保留原文。")
                         .font(.caption).foregroundStyle(.secondary)
@@ -250,7 +253,7 @@ private struct SettingsView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
-            if translationProvider == .online {
+            if usesOnlineTranslation {
                 Section("翻译状态") {
                     Text(automaticTranslation ? actions.translationStatus : "自动翻译已关闭。尚未发起联网请求。")
                         .textSelection(.enabled)

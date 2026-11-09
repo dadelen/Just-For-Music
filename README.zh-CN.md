@@ -34,7 +34,7 @@
 | CPU | 仅 Apple Silicon / arm64 |
 | 最低运行系统 | macOS 13 |
 | 玻璃 | macOS 26+：NSGlassEffectView；13–25：NSVisualEffectView |
-| 机器翻译 | macOS 15+ 可用系统本地翻译；macOS 13+ 可配置联网翻译 |
+| 机器翻译 | macOS 15+ 可用系统本地翻译 |
 | 自动翻译 | 默认关闭；默认翻译方式为系统本地，译文仅供参考 |
 | 从源码构建 | Xcode 26.4+、macOS SDK 26.4+，Swift 6.3+ |
 
@@ -67,14 +67,14 @@ open "dist/Just-For-Music.app"
 
 首次使用需要允许应用控制 Music。没有歌词时，先在 Music 打开歌词，再到「设置 → 维护」重新读取歌词缓存。本地翻译使用已安装的系统语言包。缺包时可在「系统设置 → 通用 → 语言与地区 → 翻译语言」下载，再到应用的「设置 → 翻译」重新检查。
 
-也可在「设置 → 翻译」选择「联网大模型」，填写兼容 OpenAI 的 HTTPS 地址或本机 HTTP 地址。点击「获取模型」从返回的列表选择，服务不支持获取列表时可手动填写模型 ID。保存后可从列表切换当前 API，密钥存入 macOS 钥匙串。「测试连接」只发送固定示例句。确认歌曲以外语为主后，才将缺少中文译文的行发给当前服务，并要求模型跳过中文和中外文混合行。短歌词无法区分中文或日文时，保留原文，不发送请求。联网失败或漏译时，macOS 15 或更新版本可用系统翻译补齐。
+联网大模型翻译暂时停用，已保存的配置会保留。
 
 本地包使用 ad-hoc 签名，未做 Developer ID 公证。对外分发应配置自己的签名身份和公证流程。
 
 ## 打包与自有更新源
 
 ```bash
-VERSION=1.0.2 BUILD_NUMBER=7 ./scripts/create-release-artifacts.sh
+VERSION=1.0.2 BUILD_NUMBER=8 ./scripts/create-release-artifacts.sh
 ```
 
 生成 arm64 ZIP、DMG 和 `SHA256SUMS.txt` 到 `dist/release/`。包内保留 MIT License。
@@ -84,7 +84,7 @@ VERSION=1.0.2 BUILD_NUMBER=7 ./scripts/create-release-artifacts.sh
 ```bash
 BUNDLE_IDENTIFIER=com.yourname.lyrics \
 UPDATE_REPOSITORY=yourname/your-repository \
-VERSION=1.0.2 BUILD_NUMBER=7 ./scripts/create-release-artifacts.sh
+VERSION=1.0.2 BUILD_NUMBER=8 ./scripts/create-release-artifacts.sh
 ```
 
 `v1.0` 提供源码归档。后续可用三段版本号标签触发安装包构建，工作流使用所在仓库作为更新源。

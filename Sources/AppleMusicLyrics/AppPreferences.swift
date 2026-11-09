@@ -76,7 +76,10 @@ enum AppPreferences {
     static let statusBarModeKey = "statusBar.mode"
     static let automaticTranslationKey = "translation.enabled"
     static let translationProviderKey = "translation.provider"
-    static var translationProvider: TranslationProvider { enumValue(translationProviderKey, default: .local) }
+    static let onlineTranslationAvailable = false
+    static var translationProvider: TranslationProvider {
+        onlineTranslationAvailable ? enumValue(translationProviderKey, default: .local) : .local
+    }
     static var onlineTranslationProfiles: OnlineTranslationProfiles {
         get {
             guard let data = UserDefaults.standard.data(forKey: "translation.online.profiles"),
