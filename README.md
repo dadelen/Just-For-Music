@@ -2,7 +2,8 @@
 
 English | [简体中文](README.zh-CN.md)
 
-
+##demo
+https://github.com/user-attachments/assets/425befea-16e8-4ab0-81e0-11004ee798d1
 
 
 A macOS menu bar companion for Apple Music with synced lyrics, playback controls, and a floating lyrics window. [Download for Apple Silicon](https://github.com/dadelen/Just-For-Music/releases/latest) · [Changelog](CHANGELOG.md)
