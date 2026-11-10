@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 import QuartzCore
 
@@ -35,7 +36,12 @@ final class PlaybackMonitor {
         var samplingStarted = false
     }
 
-    private static let playingInterval: TimeInterval = 0.25
+    private struct ControlRequest {
+        let arguments: [String]
+        let completion: (Bool) -> Void
+    }
+
+    private static let playingInterval: TimeInterval = 0.75
     private static let idleInterval: TimeInterval = 1
     private static let musicClosedInterval: TimeInterval = 2
     private static let helperName = "AppleMusicLyricsPlaybackHelper"
@@ -51,20 +57,31 @@ final class PlaybackMonitor {
         let state: String?
         let error: String?
         let bpm: Int?
+        let controlErrors: [String?]?
     }
 
+    private let helperURL: URL?
     private var timer: Timer?
     private var workspaceObservers: [NSObjectProtocol] = []
+    private var musicObserver: NSObjectProtocol?
+    private var eventSample: DispatchWorkItem?
+    private var needsEventSample = false
     private var helperProcess: Process?
     private var helperInput: Pipe?
     private var helperOutput: Pipe?
     private var responseBuffer = Data()
     private var requestStartedAt: CFTimeInterval?
+    private var queuedControls: [ControlRequest] = []
+    private var activeControls: [ControlRequest] = []
     private var pendingCommand: PendingCommand?
     private var commandTimeout: DispatchWorkItem?
     private var isStopping = false
 
     var onUpdate: ((Update) -> Void)?
+
+    init(helperURL: URL? = PlaybackMonitor.helperExecutableURL) {
+        self.helperURL = helperURL
+    }
 
     func start() {
         guard timer == nil else { return }
@@ -76,6 +93,17 @@ final class PlaybackMonitor {
                       app.bundleIdentifier == Self.musicBundleIdentifier else { return }
                 self?.sampleNow()
             }
+        }
+        workspaceObservers.append(center.addObserver(
+            forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.scheduleEventSample()
+        })
+        // Music's notification is a hint. Always confirm it with the helper.
+        musicObserver = DistributedNotificationCenter.default().addObserver(
+            forName: Notification.Name("com.apple.Music.playerInfo"), object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.scheduleEventSample()
         }
         scheduleSamples(every: Self.playingInterval)
         sampleNow()
@@ -102,8 +130,25 @@ final class PlaybackMonitor {
         timer = nil
         workspaceObservers.forEach(NSWorkspace.shared.notificationCenter.removeObserver)
         workspaceObservers.removeAll()
+        if let musicObserver { DistributedNotificationCenter.default().removeObserver(musicObserver) }
+        musicObserver = nil
+        eventSample?.cancel()
+        eventSample = nil
+        needsEventSample = false
         stopHelper()
         cancelCommandConfirmation()
+    }
+
+    private func scheduleEventSample() {
+        guard eventSample == nil else { return }
+        let sample = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.eventSample = nil
+            self.needsEventSample = true
+            self.sampleNow()
+        }
+        eventSample = sample
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: sample)
     }
 
     @MainActor
@@ -136,25 +181,51 @@ final class PlaybackMonitor {
     func sampleNow() {
         guard !isStopping else { return }
         if let requestStartedAt {
-            guard CACurrentMediaTime() - requestStartedAt > 2 else { return }
+            let timeout: TimeInterval = activeControls.isEmpty ? 2 : 5
+            guard CACurrentMediaTime() - requestStartedAt > timeout else { return }
             stopHelper()
+            cancelCommandConfirmation()
         }
         startHelperIfNeeded()
         guard let input = helperInput?.fileHandleForWriting else {
+            failControls()
             cancelCommandConfirmation()
             return
         }
-        pendingCommand?.samplingStarted = true
+        // Bound each pipe write. Rapid clicks retain their order and share one state sample.
+        activeControls = Array(queuedControls.prefix(16))
+        queuedControls.removeFirst(activeControls.count)
+        let request: String
+        if activeControls.isEmpty {
+            pendingCommand?.samplingStarted = true
+            request = "sample"
+        } else {
+            request = activeControls.map { $0.arguments.joined(separator: " ") }.joined(separator: "\t")
+        }
         requestStartedAt = CACurrentMediaTime()
-        input.write(Data("sample\n".utf8))
+        needsEventSample = false
+        do {
+            try input.write(contentsOf: Data((request + "\n").utf8))
+        } catch {
+            stopHelper()
+            cancelCommandConfirmation()
+        }
+    }
+
+    func performControl(_ arguments: [String], completion: @escaping (Bool) -> Void) {
+        guard !isStopping else { completion(false); return }
+        queuedControls.append(ControlRequest(arguments: arguments, completion: completion))
+        sampleNow()
     }
 
     private func startHelperIfNeeded() {
-        guard helperProcess == nil, let helperURL = Self.helperExecutableURL else { return }
+        guard helperProcess == nil, let helperURL else { return }
 
         let process = Process()
         let input = Pipe()
         let output = Pipe()
+        // Music or the helper can exit between the liveness check and a write.
+        guard fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) != -1 else { return }
         process.executableURL = helperURL
         process.standardInput = input
         process.standardOutput = output
@@ -201,6 +272,14 @@ final class PlaybackMonitor {
         helperOutput = nil
         responseBuffer.removeAll(keepingCapacity: true)
         requestStartedAt = nil
+        failControls()
+    }
+
+    private func failControls() {
+        let controls = activeControls + queuedControls
+        activeControls.removeAll()
+        queuedControls.removeAll()
+        for control in controls { control.completion(false) }
     }
 
     private func consume(_ data: Data) {
@@ -213,6 +292,19 @@ final class PlaybackMonitor {
                 continue
             }
             requestStartedAt = nil
+            let controls = activeControls
+            activeControls.removeAll(keepingCapacity: true)
+            // Finish controls first so seek handlers can reset the lyric clock before the new sample.
+            for (index, control) in controls.enumerated() {
+                if let errors = response.controlErrors, errors.count == controls.count {
+                    if let error = errors[index] {
+                        DiagnosticLogger.shared.warning("Playback control \(control.arguments[0]) failed: \(error)")
+                    }
+                    control.completion(errors[index] == nil)
+                } else {
+                    control.completion(false)
+                }
+            }
             let command = pendingCommand
             guard let update = update(from: response) else { continue }
             onUpdate?(update)
@@ -221,7 +313,7 @@ final class PlaybackMonitor {
                 finishCommandConfirmation(confirmed)
             }
         }
-        if pendingCommand?.samplingStarted == false, requestStartedAt == nil {
+        if !queuedControls.isEmpty || needsEventSample || pendingCommand?.samplingStarted == false {
             sampleNow()
         }
     }

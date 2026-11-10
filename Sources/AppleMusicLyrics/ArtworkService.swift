@@ -1,4 +1,5 @@
 import AppKit
+import ImageIO
 
 @MainActor
 final class ArtworkService {
@@ -7,9 +8,14 @@ final class ArtworkService {
     private var requestedURL: URL?
     private var generation = 0
     private var task: Task<Void, Never>?
-    private let cache = NSCache<NSURL, NSImage>()
+    private let cache = NSCache<NSString, NSImage>()
+    private let cachedURLByTrack = NSCache<NSString, NSString>()
 
-    init() { cache.countLimit = 32 }
+    init() {
+        cache.countLimit = 32
+        cache.totalCostLimit = 16 * 1024 * 1024
+        cachedURLByTrack.countLimit = 32
+    }
 
     func update(track: TrackInfo?, url: URL?) {
         guard let track else {
@@ -28,27 +34,58 @@ final class ArtworkService {
         let request = generation
         trackKey = track.identityKey
         requestedURL = url
+        let localKey = "track:\(track.identityKey)" as NSString
+        let urlKey = url.map { "url:\($0.absoluteString)" as NSString }
+        let rememberedKey = cachedURLByTrack.object(forKey: localKey)
+        let cached = urlKey.flatMap(cache.object(forKey:))
+            ?? (urlKey == nil ? rememberedKey.flatMap(cache.object(forKey:)) ?? cache.object(forKey: localKey) : nil)
+        if let cached {
+            if let urlKey { cachedURLByTrack.setObject(urlKey, forKey: localKey) }
+            onChange?(cached)
+            return
+        }
         if changed { onChange?(nil) }
-        if let url, let image = cache.object(forKey: url as NSURL) { onChange?(image); return }
         task = Task { [weak self] in
-            var image: NSImage?
+            var thumbnail: CGImage?
             if let url {
                 var request = URLRequest(url: url)
                 request.cachePolicy = .returnCacheDataElseLoad
                 request.timeoutInterval = 8
                 if let (data, response) = try? await URLSession.shared.data(for: request),
                    (response as? HTTPURLResponse)?.statusCode == 200 {
-                    image = NSImage(data: data)
+                    thumbnail = await Task.detached(priority: .utility) { Self.thumbnail(from: data) }.value
                 }
             }
-            if image == nil && !Task.isCancelled {
-                let data = await Task.detached(priority: .utility) { Self.musicArtwork(for: track) }.value
-                image = data.flatMap(NSImage.init(data:))
-            }
             guard let self, !Task.isCancelled, self.generation == request else { return }
-            if let image, let url { self.cache.setObject(image, forKey: url as NSURL) }
+            var cacheKey = urlKey ?? localKey
+            if thumbnail == nil {
+                cacheKey = localKey
+                if let image = self.cache.object(forKey: localKey) {
+                    self.onChange?(image)
+                    return
+                }
+                thumbnail = await Task.detached(priority: .utility) {
+                    Self.musicArtwork(for: track).flatMap(Self.thumbnail(from:))
+                }.value
+            }
+            guard !Task.isCancelled, self.generation == request else { return }
+            guard let thumbnail else { self.onChange?(nil); return }
+            let image = NSImage(cgImage: thumbnail, size: .zero)
+            self.cache.setObject(image, forKey: cacheKey, cost: thumbnail.bytesPerRow * thumbnail.height)
+            if cacheKey != localKey { self.cachedURLByTrack.setObject(cacheKey, forKey: localKey) }
             self.onChange?(image)
         }
+    }
+
+    private nonisolated static func thumbnail(from data: Data) -> CGImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData,
+                                                       [kCGImageSourceShouldCache: false] as CFDictionary) else { return nil }
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: 640,
+            kCGImageSourceShouldCacheImmediately: true
+        ] as CFDictionary)
     }
 
     private nonisolated static func musicArtwork(for track: TrackInfo) -> Data? {

@@ -74,7 +74,7 @@ open "dist/Just-For-Music.app"
 ## 打包与自有更新源
 
 ```bash
-VERSION=1.0.2 BUILD_NUMBER=8 ./scripts/create-release-artifacts.sh
+VERSION=1.0.3 BUILD_NUMBER=10 ./scripts/create-release-artifacts.sh
 ```
 
 生成 arm64 ZIP、DMG 和 `SHA256SUMS.txt` 到 `dist/release/`。包内保留 MIT License。
@@ -84,7 +84,7 @@ VERSION=1.0.2 BUILD_NUMBER=8 ./scripts/create-release-artifacts.sh
 ```bash
 BUNDLE_IDENTIFIER=com.yourname.lyrics \
 UPDATE_REPOSITORY=yourname/your-repository \
-VERSION=1.0.2 BUILD_NUMBER=8 ./scripts/create-release-artifacts.sh
+VERSION=1.0.3 BUILD_NUMBER=10 ./scripts/create-release-artifacts.sh
 ```
 
 `v1.0` 提供源码归档。后续可用三段版本号标签触发安装包构建，工作流使用所在仓库作为更新源。

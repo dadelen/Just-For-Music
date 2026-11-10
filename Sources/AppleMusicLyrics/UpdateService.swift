@@ -126,9 +126,15 @@ final class UpdateService: @unchecked Sendable {
               let version = SemanticVersion(release.tagName),
               version > currentVersion else { return nil }
 
-        let dmg = release.assets.first {
-            $0.name.hasSuffix("-macos-arm64.dmg") && Self.isTrustedReleaseURL($0.downloadURL)
+        let diskImages = release.assets.filter {
+            $0.name.lowercased().hasSuffix(".dmg") && !$0.name.contains("/") && Self.isTrustedReleaseURL($0.downloadURL)
         }
+        let appleSiliconImages = diskImages.filter {
+            $0.name.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).contains("arm64")
+        }
+        let dmg = appleSiliconImages.first { $0.name.lowercased().hasSuffix("-macos-arm64.dmg") }
+            ?? (appleSiliconImages.count == 1 ? appleSiliconImages.first : nil)
+            ?? (diskImages.count == 1 ? diskImages.first { $0.name == "\(AppIdentity.name)-\(version).dmg" } : nil)
         let checksum = release.assets.first {
             $0.name == "SHA256SUMS.txt" && Self.isTrustedReleaseURL($0.downloadURL)
         }

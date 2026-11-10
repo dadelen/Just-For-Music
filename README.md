@@ -62,7 +62,7 @@ Automatic mode chooses a conservative width, and Icon Only mode is available whe
 ## Distribution
 
 ```bash
-VERSION=1.0.2 BUILD_NUMBER=8 ./scripts/create-release-artifacts.sh
+VERSION=1.0.3 BUILD_NUMBER=10 ./scripts/create-release-artifacts.sh
 ```
 
 This creates arm64 ZIP/DMG archives and SHA256SUMS in `dist/release/`. Local builds are ad-hoc signed and not notarized.
@@ -72,7 +72,7 @@ Forks can override the defaults:
 ```bash
 BUNDLE_IDENTIFIER=com.yourname.lyrics \
 UPDATE_REPOSITORY=yourname/your-repository \
-VERSION=1.0.2 BUILD_NUMBER=8 ./scripts/create-release-artifacts.sh
+VERSION=1.0.3 BUILD_NUMBER=10 ./scripts/create-release-artifacts.sh
 ```
 
 The `v1.0` release contains source archives. Three-part version tags can trigger the installer build workflow. It uses the repository that runs the workflow as the update source.

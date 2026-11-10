@@ -61,6 +61,82 @@ final class PlaybackControlsTests: XCTestCase {
         }
     }
 
+    func testQueuedTransportCommandsShareOneHelperAndOneFreshSample() async throws {
+        let url = try makeHelper(
+            #"""
+            IFS= read -r request && [ "$request" = sample ] || exit 1
+            printf '%s\n' '{"kind":"track","title":"Before","artist":"","album":"","duration":30,"position":1,"state":"playing"}'
+            IFS= read -r request && [ "$request" = "$(printf 'next\ttoggle\tseek 12.0')" ] || exit 2
+            printf '%s\n' '{"kind":"track","title":"After","artist":"","album":"","duration":30,"position":12,"state":"playing","controlErrors":[null,"denied",null]}'
+            IFS= read -r request
+            """#
+        )
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let monitor = PlaybackMonitor(helperURL: url)
+        defer { monitor.stop() }
+        let controller = MusicPlaybackController(monitor: monitor)
+        let done = expectation(description: "received the batch's sample")
+        var events: [String] = []
+        monitor.onUpdate = { update in
+            guard case .track(let track) = update else { return }
+            events.append("\(track.title):\(Int(track.position))")
+            if track.title == "After" { done.fulfill() }
+        }
+
+        monitor.sampleNow()
+        controller.perform(.next) { events.append("next:\($0)") }
+        controller.perform(.toggle) { events.append("toggle:\($0)") }
+        controller.seek(to: 12) { events.append("seek:\($0)") }
+
+        await fulfillment(of: [done], timeout: 3)
+        XCTAssertEqual(events, ["Before:1", "next:true", "toggle:false", "seek:true", "After:12"])
+    }
+
+    func testHelperExitFailsPendingCommandsAndRestartsForTheNextClick() async throws {
+        let url = try makeHelper(
+            #"""
+            if [ ! -f "$0.failed" ]; then
+                : > "$0.failed"
+                IFS= read -r request
+                exit 1
+            fi
+            IFS= read -r request && [ "$request" = previous ] || exit 2
+            printf '%s\n' '{"kind":"stopped","controlErrors":[null]}'
+            IFS= read -r request
+            """#
+        )
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let monitor = PlaybackMonitor(helperURL: url)
+        defer { monitor.stop() }
+        let controller = MusicPlaybackController(monitor: monitor)
+        let done = expectation(description: "both commands complete")
+        done.expectedFulfillmentCount = 2
+        done.assertForOverFulfill = true
+        for command: MusicPlaybackController.Command in [.next, .toggle] {
+            controller.perform(command) { succeeded in
+                XCTAssertFalse(succeeded)
+                done.fulfill()
+            }
+        }
+        await fulfillment(of: [done], timeout: 3)
+
+        let restarted = expectation(description: "new command succeeds on the restarted helper")
+        controller.perform(.previous) { succeeded in
+            XCTAssertTrue(succeeded)
+            restarted.fulfill()
+        }
+        await fulfillment(of: [restarted], timeout: 3)
+    }
+
+    private func makeHelper(_ source: String) throws -> URL {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        let url = directory.appendingPathComponent("playback-helper")
+        try ("#!/bin/sh\n" + source + "\n").write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
+        return url
+    }
+
     private func track(_ title: String, state: PlayerState) -> TrackInfo {
         TrackInfo(title: title, artist: "", album: "", duration: 30, position: 0, state: state)
     }

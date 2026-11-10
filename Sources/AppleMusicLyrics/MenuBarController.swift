@@ -8,6 +8,7 @@ final class MenuBarController: NSObject {
     }
 
     private static let footerHeight: CGFloat = 46
+    private static let lyricSampleHorizon: TimeInterval = 1.5
     // The menu bar inserts new items to the left of existing ones.
     private let nextStatusItem = MenuBarController.makeStatusItem("Playback.Next", length: 26)
     private let toggleStatusItem = MenuBarController.makeStatusItem("Playback.Toggle", length: 26)
@@ -33,6 +34,8 @@ final class MenuBarController: NSObject {
     private var lyricsItemWidth: CGFloat = 180
     private var lyricsVisibility: CGFloat
     private var visibilityTimer: Timer?
+    private var lineAdvanceTimer: Timer?
+    private var screensAwake = true
     private var lastControlState: PlayerState?
     private var localDismissMonitor: Any?
     private var outsideDismissMonitor: Any?
@@ -240,6 +243,11 @@ final class MenuBarController: NSObject {
         karaokeTitleView.wantsLayer = true
         lyricButton.addSubview(karaokeTitleView)
         NotificationCenter.default.addObserver(self, selector: #selector(screenParametersChanged), name: NSApplication.didChangeScreenParametersNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(statusWindowOcclusionChanged(_:)),
+                                               name: NSWindow.didChangeOcclusionStateNotification, object: nil)
+        let workspace = NSWorkspace.shared.notificationCenter
+        workspace.addObserver(self, selector: #selector(screenPowerChanged(_:)), name: NSWorkspace.screensDidSleepNotification, object: nil)
+        workspace.addObserver(self, selector: #selector(screenPowerChanged(_:)), name: NSWorkspace.screensDidWakeNotification, object: nil)
         reloadAppearance()
     }
 
@@ -305,14 +313,16 @@ final class MenuBarController: NSObject {
             guard window !== playerPanel,
                   window !== statusItem.button?.window,
                   !playbackStatusItems.contains(where: { $0.button?.window === window }) else { return }
+        } else {
+            // Some status-item events have a screen location but no window.
+            for item in [statusItem] + playbackStatusItems where item.isVisible {
+                guard let button = item.button, let window = button.window, window.isVisible,
+                      window.occlusionState.contains(.visible),
+                      window.convertToScreen(button.convert(button.bounds, to: nil)).contains(event.locationInWindow) else { continue }
+                return
+            }
         }
-        let point = event.window?.convertPoint(toScreen: event.locationInWindow) ?? event.locationInWindow
-        // The system can report status-item clicks without our status window.
-        let inMenuBar = NSScreen.screens.contains { screen in
-            let menuBarHeight = max(NSStatusBar.system.thickness, screen.safeAreaInsets.top)
-            return screen.frame.contains(point) && point.y >= screen.frame.maxY - menuBarHeight
-        }
-        if !inMenuBar { dismissPlayer() }
+        dismissPlayer()
     }
 
     private func removeDismissMonitors() {
@@ -338,7 +348,8 @@ final class MenuBarController: NSObject {
         floatingLyricsVisible = visible
         updatePlaybackItems()
         scheduleAppearanceUpdate()
-        if !visible { displayLatestTitle() }
+        if visible { lineAdvanceTimer?.invalidate() }
+        else { displayLatestTitle() }
 
         visibilityTimer?.invalidate()
         visibilityTimer = nil
@@ -390,6 +401,26 @@ final class MenuBarController: NSObject {
         reloadAppearance()
     }
 
+    @objc private func screenPowerChanged(_ notification: Notification) {
+        screensAwake = notification.name == NSWorkspace.screensDidWakeNotification
+        refreshStatusRendering()
+    }
+
+    @objc private func statusWindowOcclusionChanged(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow, window === statusItem.button?.window else { return }
+        refreshStatusRendering()
+    }
+
+    private var statusLyricsVisible: Bool {
+        guard screensAwake, statusItem.isVisible, let window = statusItem.button?.window else { return false }
+        return window.isVisible && window.occlusionState.contains(.visible)
+    }
+
+    private func refreshStatusRendering() {
+        karaokeTitleView.renderingVisible = statusLyricsVisible
+        if !floatingLyricsVisible { displayLatestTitle() }
+    }
+
     func reloadAppearance() {
         let screen = statusItem.button?.window?.screen ?? NSScreen.main
         let constrained = (screen?.auxiliaryTopRightArea?.width ?? 0) > 0 || (screen?.frame.width ?? 1440) < 1500
@@ -406,8 +437,10 @@ final class MenuBarController: NSObject {
 
     deinit {
         visibilityTimer?.invalidate()
+        lineAdvanceTimer?.invalidate()
         removeDismissMonitors()
         NotificationCenter.default.removeObserver(self)
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
         for item in playbackStatusItems + [statusItem] {
             NSStatusBar.system.removeStatusItem(item)
         }
@@ -421,6 +454,9 @@ final class MenuBarController: NSObject {
     }
 
     private func displayLatestTitle() {
+        lineAdvanceTimer?.invalidate()
+        lineAdvanceTimer = nil
+        karaokeTitleView.renderingVisible = statusLyricsVisible
         if AppPreferences.statusBarMode == .icon {
             karaokeTitleView.deactivate()
             karaokeTitleView.isHidden = true
@@ -436,12 +472,22 @@ final class MenuBarController: NSObject {
         case .text(let text):
             setTitle(text)
         case .synced(let track, let lyrics, let sampledAt):
-            let elapsed = track.state == .playing ? min(0.5, CACurrentMediaTime() - sampledAt) : 0
+            let elapsed = track.state == .playing ? min(Self.lyricSampleHorizon, max(0, CACurrentMediaTime() - sampledAt)) : 0
             let position = track.position + elapsed
-            if let line = lyrics.line(at: position) {
-                setKaraokeTitle(line: line, position: position, isPlaying: track.state == .playing)
+            let lineIndex = lyrics.lineIndex(at: position)
+            if let lineIndex, !lyrics.lines[lineIndex].isGap {
+                setKaraokeTitle(line: lyrics.lines[lineIndex], position: position, isPlaying: track.state == .playing)
             } else {
-                setTitle(track.title)
+                setTitle(track.displayName)
+            }
+            let next = (lineIndex ?? -1) + 1
+            if track.state == .playing, statusLyricsVisible, lyrics.lines.indices.contains(next),
+               lyrics.lines[next].time - track.position <= Self.lyricSampleHorizon {
+                let timer = Timer(timeInterval: max(0.01, lyrics.lines[next].time - position), repeats: false) { [weak self] _ in
+                    self?.displayLatestTitle()
+                }
+                lineAdvanceTimer = timer
+                RunLoop.main.add(timer, forMode: .common)
             }
         }
     }
@@ -866,6 +912,11 @@ private final class MenuPlayerView: NSView {
 // MARK: - Smooth menu bar karaoke
 
 private final class KaraokeStatusTitleView: NSView {
+    var renderingVisible = true {
+        didSet {
+            if !renderingVisible { stopTimer() }
+        }
+    }
     private struct TimedGlyph {
         let start: TimeInterval
         let end: TimeInterval
@@ -1314,7 +1365,7 @@ private final class KaraokeStatusTitleView: NSView {
     }
 
     private func activateTimer() {
-        guard displayTimer == nil else { return }
+        guard renderingVisible, displayTimer == nil else { return }
         let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
             self?.needsDisplay = true
         }

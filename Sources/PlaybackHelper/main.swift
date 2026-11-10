@@ -15,11 +15,16 @@ private struct Response: Codable {
     let state: String?
     let error: String?
     var bpm: Int? = nil
+    var controlErrors: [String?]? = nil
 }
 
 private let delimiter = "\u{1F}"
 private let script = NSAppleScript(source: """
     property previousTrackKey : missing value
+    property cachedTitle : ""
+    property cachedArtist : ""
+    property cachedAlbum : ""
+    property cachedDuration : 0
     property cachedBPM : 0
 
     if application id "com.apple.Music" is not running then
@@ -33,23 +38,27 @@ private let script = NSAppleScript(source: """
             return "STOPPED"
         end if
         set t to current track
-        set trackTitle to name of t
-        set trackArtist to artist of t
-        set trackAlbum to album of t
-        set trackDuration to duration of t
-        set trackKey to {trackTitle, trackArtist, trackAlbum, trackDuration}
-        if trackKey is not equal to my previousTrackKey then
-            set my previousTrackKey to trackKey
+        set trackKey to missing value
+        try
+            set trackKey to persistent ID of t
+        end try
+        if trackKey is missing value or trackKey is "" or trackKey is not equal to my previousTrackKey then
+            set my cachedTitle to name of t
+            set my cachedArtist to artist of t
+            set my cachedAlbum to album of t
+            set my cachedDuration to duration of t
             set my cachedBPM to 0
             try
                 set my cachedBPM to (bpm of t) as integer
             end try
+            set my previousTrackKey to trackKey
         end if
         set delim to "\(delimiter)"
-        return trackTitle & delim & trackArtist & delim & trackAlbum & delim & (playbackState as text) & delim & (player position as text) & delim & (trackDuration as text) & delim & (my cachedBPM as text)
+        return my cachedTitle & delim & my cachedArtist & delim & my cachedAlbum & delim & (playbackState as text) & delim & (player position as text) & delim & (my cachedDuration as text) & delim & (my cachedBPM as text)
     end tell
     """)
 private let encoder = JSONEncoder()
+private var controlScripts: [String: NSAppleScript] = [:]
 
 private func sample() -> Response {
     guard let script else {
@@ -114,7 +123,7 @@ private func write(_ response: Response) {
     FileHandle.standardOutput.write(data)
 }
 
-private func control(_ arguments: [String]) -> Int32 {
+private func control(_ arguments: [String]) -> String? {
     let command: String
     switch arguments.first {
     case "previous" where arguments.count == 1: command = "previous track"
@@ -125,26 +134,23 @@ private func control(_ arguments: [String]) -> Int32 {
     case "cue-previous" where arguments.count == 1: command = cueTrack("previous track")
     case "cue-next" where arguments.count == 1: command = cueTrack("next track")
     case "seek" where arguments.count == 2:
-        guard let seconds = TimeInterval(arguments[1]), seconds.isFinite, seconds >= 0 else { return 64 }
+        guard let seconds = TimeInterval(arguments[1]), seconds.isFinite, seconds >= 0 else { return "Invalid seek position" }
         command = "set player position to \(seconds)"
     default:
-        return 64
+        return "Unknown playback command"
     }
-    guard let script = NSAppleScript(source: """
+    guard let script = controlScripts[command] ?? NSAppleScript(source: """
         with timeout of 3 seconds
             tell application id "com.apple.Music"
                 \(command)
             end tell
         end timeout
-        """) else { return 1 }
+        """) else { return "Failed to create playback script" }
+    // Seek values vary, so cache only the finite set of transport scripts.
+    if arguments.count == 1 { controlScripts[command] = script }
     var errorInfo: NSDictionary?
     script.executeAndReturnError(&errorInfo)
-    if let errorInfo {
-        let message = errorInfo[NSAppleScript.errorMessage] as? String ?? "Unable to control Music"
-        FileHandle.standardError.write(Data(message.utf8))
-        return 1
-    }
-    return 0
+    return errorInfo.map { $0[NSAppleScript.errorMessage] as? String ?? "Unable to control Music" }
 }
 
 private func cueTrack(_ direction: String) -> String {
@@ -156,11 +162,24 @@ private func cueTrack(_ direction: String) -> String {
 }
 
 if CommandLine.arguments.dropFirst().first == "--control" {
-    exit(control(Array(CommandLine.arguments.dropFirst(2))))
+    if let error = control(Array(CommandLine.arguments.dropFirst(2))) {
+        FileHandle.standardError.write(Data(error.utf8))
+        exit(1)
+    }
+    exit(0)
 }
 
-while readLine() != nil {
+while let line = readLine() {
     autoreleasepool {
-        write(sample())
+        if line == "sample" {
+            write(sample())
+        } else {
+            let errors = line.components(separatedBy: "\t").map {
+                control($0.split(separator: " ").map(String.init))
+            }
+            var response = sample()
+            response.controlErrors = errors
+            write(response)
+        }
     }
 }

@@ -10,7 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let floating = FloatingLyricsController()
     private let playbackMonitor = PlaybackMonitor()
     private let lyricsService = LyricsService()
-    private let playbackController = MusicPlaybackController()
+    private lazy var playbackController = MusicPlaybackController(monitor: playbackMonitor)
     private let updateService = UpdateService()
     private let logger = DiagnosticLogger.shared
 
@@ -98,9 +98,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menuBar.onShowLyrics = { [weak self] in self?.floating.showFromPlayer() }
         NotificationCenter.default.addObserver(self, selector: #selector(preferencesChanged), name: AppPreferences.didChange, object: nil)
         menuBar.onSeek = { [weak self] position in
-            self?.playbackController.seek(to: position) {
+            self?.playbackController.seek(to: position) { succeeded in
+                guard succeeded else { return }
                 self?.resetPlaybackClocks()
-                self?.playbackMonitor.sampleNow()
             }
         }
         let previousTrack: () -> Void = { [weak self] in
@@ -129,9 +129,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         floating.onSeek = { [weak self] position in
-            self?.playbackController.seek(to: position) {
+            self?.playbackController.seek(to: position) { succeeded in
+                guard succeeded else { return }
                 self?.resetPlaybackClocks()
-                self?.playbackMonitor.sampleNow()
             }
         }
         floating.onVisibilityChanged = { [weak self] visible in
@@ -234,7 +234,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             needlePlaybackTask.cancel()
             playbackMonitor.cancelCommandConfirmation()
         }
-        playbackController.perform(command) { [weak self] _ in self?.playbackMonitor.sampleNow() }
+        playbackController.perform(command)
     }
 
     private func performVinylTransport(_ command: MusicPlaybackController.Command) {
@@ -270,6 +270,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .pause: expectation = .init(state: .paused, trackKey: trackKey)
         case .cuePrevious, .cueNext: expectation = .init(state: .paused, trackKey: nil)
         default: return false
+        }
+        // The helper returns a fresh state together with its command result.
+        if let latestTrack,
+           expectation.trackKey != nil || latestTrack.identityKey != trackKey,
+           let confirmed = expectation.resolution(for: .track(latestTrack)) {
+            return confirmed
         }
         return await playbackMonitor.confirmCommand(expectation)
     }
@@ -479,8 +485,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let trackChanged = currentTrackKey != key
 
         if trackChanged || forceRefresh {
+            let bypassMemory = forceRefresh
             logger.info(
-                "Lyrics lookup triggered; reason=\(trackChanged ? "track changed" : "manual refresh"); "
+                "Lyrics lookup triggered; reason=\(bypassMemory ? "manual refresh" : "track changed"); "
                     + "track=\(track.displayName); duration=\(Int(track.duration.rounded()))"
             )
             cancelTranslation()
@@ -490,7 +497,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             currentLyrics = .empty
             forceRefresh = false
             lyricsRetryDelay = 2
-            loadLyrics(for: track, showLoading: true)
+            loadLyrics(for: track, showLoading: true, bypassMemory: bypassMemory)
             apply(.loadingLyrics(track))
             return
         }
@@ -518,7 +525,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func loadLyrics(for track: TrackInfo, showLoading: Bool) {
+    private func loadLyrics(for track: TrackInfo, showLoading: Bool, bypassMemory: Bool = false) {
         lyricsTask?.cancel()
         isLoadingLyrics = true
         showsLoadingState = showLoading
@@ -529,7 +536,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateTranslationDemand()
 
         lyricsTask = Task { [weak self, lyricsService] in
-            let document = await lyricsService.lyrics(for: track)
+            var document = await lyricsService.lyrics(for: track, bypassMemory: bypassMemory)
+            if showLoading, document.lines.isEmpty {
+                guard !Task.isCancelled, self?.lyricsGeneration == generation else { return }
+                self?.showsLoadingState = false
+                if let latest = self?.latestTrack, latest.identityKey == key {
+                    self?.apply(.noLyrics(latest))
+                }
+                // Give Music a short window to publish the response without rescanning the directory.
+                do { try await Task.sleep(nanoseconds: 400_000_000) }
+                catch { return }
+                guard !Task.isCancelled, self?.lyricsGeneration == generation else { return }
+                document = await lyricsService.lyrics(for: track, recentIndexOnly: true)
+            }
             guard !Task.isCancelled, let self, self.currentTrackKey == key,
                   self.lyricsGeneration == generation else { return }
             self.lyricsTask = nil

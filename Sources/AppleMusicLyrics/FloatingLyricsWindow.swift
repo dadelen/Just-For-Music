@@ -657,6 +657,7 @@ private final class LyricsCanvasView: NSView {
     private struct PendingLyricClick {
         let lineIndex: Int
         let screenLocation: NSPoint
+        let mouseDownEvent: NSEvent
     }
 
     private enum AnimationSpec {
@@ -1488,7 +1489,8 @@ private final class LyricsCanvasView: NSView {
         updateHoveredLine(selectedIndex)
         pendingLyricClick = PendingLyricClick(
             lineIndex: selectedIndex,
-            screenLocation: NSEvent.mouseLocation
+            screenLocation: NSEvent.mouseLocation,
+            mouseDownEvent: event
         )
     }
 
@@ -1497,6 +1499,10 @@ private final class LyricsCanvasView: NSView {
            distance(from: pendingLyricClick.screenLocation, to: NSEvent.mouseLocation)
                 > AnimationSpec.clickDragThreshold {
             self.pendingLyricClick = nil
+            if let window, window.isMovable, !window.ignoresMouseEvents {
+                window.performDrag(with: pendingLyricClick.mouseDownEvent)
+                return
+            }
         }
         super.mouseDragged(with: event)
     }

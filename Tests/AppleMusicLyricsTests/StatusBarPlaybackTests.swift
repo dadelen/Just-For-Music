@@ -87,6 +87,24 @@ final class StatusBarPlaybackTests: XCTestCase {
         XCTAssertTrue(panel.isVisible)
     }
 
+    func testStatusGapShowsTrackAndAdvancesAtTheLyricTimestampWithoutPolling() async throws {
+        _ = NSApplication.shared
+        let originalMode = AppPreferences.statusBarMode
+        defer { AppPreferences.statusBarMode = originalMode }
+        AppPreferences.statusBarMode = .automatic
+        let controller = MenuBarController()
+        let item = try XCTUnwrap(Mirror(reflecting: controller).children.first { $0.label == "statusItem" }?.value as? NSStatusItem)
+        let button = try XCTUnwrap(item.button)
+        let track = TrackInfo(title: "Song", artist: "Artist", album: "", duration: 30, position: 2.85, state: .playing)
+        let lyrics = LyricsDocument(lines: [LyricLine(time: 3, text: "First lyric")], plainText: nil,
+                                    source: "test", isSynced: true, wordTiming: .none).addingGaps(duration: track.duration)
+
+        controller.updateKaraokeProgress(track: track, lyrics: lyrics)
+        XCTAssertEqual(button.accessibilityLabel(), "打开播放器，Song — Artist")
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(button.accessibilityLabel(), "打开播放器，First lyric")
+    }
+
     func testProgressKeepsNewestSeekWhileMusicReportsOldPositions() throws {
         let app = NSApplication.shared
         let controller = MenuBarController()

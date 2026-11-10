@@ -204,10 +204,12 @@ final class AppleMusicCacheLyricsProviderTests: XCTestCase {
             position: 1.5,
             state: .playing
         )
-        let document = AppleMusicCacheLyricsProvider(cacheDirectory: root).lyrics(for: track)
+        let fileManager = DirectoryTrackingFileManager()
+        let document = AppleMusicCacheLyricsProvider(fileManager: fileManager, cacheDirectory: root).lyrics(for: track)
 
         XCTAssertEqual(document.lines.first?.text, "Inline lyric")
         XCTAssertEqual(document.wordTiming, .exact)
+        XCTAssertEqual(fileManager.directoryScans, 0)
     }
 
     func testFallsBackToDirectoryWhenIndexedFileIsMissing() throws {
@@ -226,6 +228,7 @@ final class AppleMusicCacheLyricsProviderTests: XCTestCase {
 
         let databaseURL = root.appendingPathComponent("Cache.db")
         let missingName = UUID().uuidString.data(using: .utf8)!.hexEncodedString
+        let malformed = try cachedResponse(title: "Fallback Song", artist: "Fallback Artist", localizations: "<tt>")
         try runSQLite(
             databaseURL,
             sql: """
@@ -233,6 +236,8 @@ final class AppleMusicCacheLyricsProviderTests: XCTestCase {
             CREATE TABLE cfurl_cache_receiver_data(entry_ID INTEGER PRIMARY KEY, isDataOnFS INTEGER, receiver_data BLOB);
             INSERT INTO cfurl_cache_response VALUES(1, 'https://example.test/syllable-lyrics', '2026-01-01');
             INSERT INTO cfurl_cache_receiver_data VALUES(1, 1, X'\(missingName)');
+            INSERT INTO cfurl_cache_response VALUES(2, 'https://example.test/syllable-lyrics', '2026-01-02');
+            INSERT INTO cfurl_cache_receiver_data VALUES(2, 0, X'\(malformed.hexEncodedString)');
             """
         )
 
@@ -244,9 +249,52 @@ final class AppleMusicCacheLyricsProviderTests: XCTestCase {
             position: 1.5,
             state: .playing
         )
-        let document = AppleMusicCacheLyricsProvider(cacheDirectory: root).lyrics(for: track)
+        let fileManager = DirectoryTrackingFileManager()
+        let provider = AppleMusicCacheLyricsProvider(fileManager: fileManager, cacheDirectory: root)
+        XCTAssertEqual(provider.lyrics(for: track, recentIndexOnly: true), .empty)
+        XCTAssertEqual(fileManager.directoryScans, 0)
+        let document = provider.lyrics(for: track)
 
         XCTAssertEqual(document.lines.first?.text, "Fallback lyric")
+        XCTAssertEqual(fileManager.directoryScans, 1)
+    }
+
+    func testLyricsMemoryCacheReusesSuccessAndRefreshDoesNotCacheMisses() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let dataDirectory = root.appendingPathComponent("fsCachedData")
+        try FileManager.default.createDirectory(at: dataDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = dataDirectory.appendingPathComponent(UUID().uuidString)
+        let track = TrackInfo(title: "Memory Song", artist: "Artist", album: "Test Album",
+                              duration: 180, position: 1, state: .playing)
+        let fileManager = DirectoryTrackingFileManager()
+        let service = LyricsService(provider: AppleMusicCacheLyricsProvider(fileManager: fileManager, cacheDirectory: root))
+        func write(_ text: String) throws {
+            try cachedResponse(title: track.title, artist: track.artist,
+                               localizations: ttmlLine(text, begin: 1, end: 2)).write(to: file)
+        }
+
+        let initialMiss = await service.lyrics(for: track)
+        XCTAssertEqual(initialMiss, .empty)
+        let secondMiss = await service.lyrics(for: track)
+        XCTAssertEqual(secondMiss, .empty)
+        XCTAssertEqual(fileManager.directoryScans, 1)
+        try write("first")
+        let first = await service.lyrics(for: track)
+        XCTAssertEqual(first.lines.first?.text, "first")
+        XCTAssertEqual(fileManager.directoryScans, 2)
+
+        try write("updated")
+        let hit = await service.lyrics(for: track)
+        XCTAssertEqual(hit, first)
+        let refreshed = await service.lyrics(for: track, bypassMemory: true)
+        XCTAssertEqual(refreshed.lines.first?.text, "updated")
+
+        try FileManager.default.removeItem(at: file)
+        let refreshMiss = await service.lyrics(for: track, bypassMemory: true)
+        let afterRefresh = await service.lyrics(for: track)
+        XCTAssertEqual(refreshMiss, .empty)
+        XCTAssertEqual(afterRefresh, .empty)
     }
 
     func testAttachesAvailableTranslationAndTransliteration() throws {
@@ -472,6 +520,16 @@ final class AppleMusicCacheLyricsProviderTests: XCTestCase {
         """
         <tt><body><div><p begin="\(begin)" end="\(end)"><span begin="\(begin)" end="\(end)">\(text)</span></p></div></body></tt>
         """
+    }
+}
+
+private final class DirectoryTrackingFileManager: FileManager, @unchecked Sendable {
+    private(set) var directoryScans = 0
+
+    override func contentsOfDirectory(at url: URL, includingPropertiesForKeys keys: [URLResourceKey]?,
+                                      options mask: FileManager.DirectoryEnumerationOptions = []) throws -> [URL] {
+        directoryScans += 1
+        return try super.contentsOfDirectory(at: url, includingPropertiesForKeys: keys, options: mask)
     }
 }
 

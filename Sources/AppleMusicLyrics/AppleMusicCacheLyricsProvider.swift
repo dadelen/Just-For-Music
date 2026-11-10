@@ -1,4 +1,6 @@
 import Foundation
+import os
+import SQLite3
 
 /// Reads the catalog responses already downloaded by Music.app. This provider
 /// never uses Apple account credentials and never makes a network request.
@@ -7,6 +9,12 @@ final class AppleMusicCacheLyricsProvider: @unchecked Sendable {
     private let cacheDirectory: URL
     private let databaseURL: URL
     private let preferredLanguages: [String]
+    private struct DirectoryMiss: Sendable {
+        let modified: Date?
+        let retryAt: TimeInterval
+    }
+
+    private let directoryMisses = OSAllocatedUnfairLock(initialState: [String: DirectoryMiss]())
     private let maximumCandidates = 160
     private let logger = DiagnosticLogger.shared
     private let metadataMatcher = TrackMetadataMatcher()
@@ -25,64 +33,84 @@ final class AppleMusicCacheLyricsProvider: @unchecked Sendable {
         self.databaseURL = root.appendingPathComponent("Cache.db")
     }
 
-    func lyrics(for track: TrackInfo, isCancelled: () -> Bool = { Task.isCancelled }) -> LyricsDocument {
+    func lyrics(for track: TrackInfo, recentIndexOnly: Bool = false,
+                bypassDirectoryCooldown: Bool = false,
+                isCancelled: () -> Bool = { Task.isCancelled }) -> LyricsDocument {
         guard !isCancelled() else { return .empty }
-        var best: (match: TrackMetadataMatch, song: CatalogSong)?
-        var readableCandidates = 0
-        var decodedResponses = 0
-        var songsExamined = 0
-        var decodeFailures = 0
+        let started = ProcessInfo.processInfo.systemUptime
+        logger.info("Lyrics lookup started; track=\(track.displayName); recentIndexOnly=\(recentIndexOnly)")
+        let indexed = indexedCandidates(limit: recentIndexOnly ? 24 : maximumCandidates, isCancelled: isCancelled)
+        guard !isCancelled() else { return .empty }
+        let indexMilliseconds = Int((ProcessInfo.processInfo.systemUptime - started) * 1_000)
+        logger.info("Cache index collected; indexed=\(indexed.count); milliseconds=\(indexMilliseconds)")
 
-        let candidates = candidates(isCancelled: isCancelled)
-        guard !isCancelled() else { return .empty }
-        logger.info(
-            "Lyrics lookup started; track=\(track.displayName); duration=\(Int(track.duration.rounded())); "
-                + "candidates=\(candidates.count)"
-        )
-        for candidate in candidates {
+        typealias Match = (match: TrackMetadataMatch, song: CatalogSong)
+        var lessCertain: [Match] = []
+        func scan(_ candidates: [CacheCandidate]) -> LyricsDocument? {
+            for candidate in candidates {
+                guard !isCancelled() else { return nil }
+                guard let data = candidate.data(),
+                      let response = try? JSONDecoder().decode(CatalogResponse.self, from: data) else { continue }
+                let matches: [Match] = response.data.compactMap { song in
+                    guard song.relationships?.syllableLyrics?.data.first?.attributes.ttmlLocalizations != nil,
+                          let match = metadataMatcher.match(song.attributes, to: track) else { return nil }
+                    return (match, song)
+                }.sorted { $0.match.score > $1.match.score }
+
+                for (match, song) in matches {
+                    guard !isCancelled() else { return nil }
+                    // Keep the existing strong-match threshold and require usable TTML before stopping.
+                    if match.score >= 180 {
+                        if let document = parse(song, match: match) { return document }
+                    } else if !recentIndexOnly {
+                        lessCertain.append((match, song))
+                    }
+                }
+            }
+            return nil
+        }
+
+        if let document = scan(indexed) { return document }
+        guard !recentIndexOnly, !isCancelled() else { return .empty }
+        let key = track.identityKey
+        // FileManager reads fresh metadata. A retained URL can cache old resource values.
+        let directoryModified = (try? fileManager.attributesOfItem(atPath: cacheDirectory.path))?[.modificationDate] as? Date
+        let fallbackStarted = ProcessInfo.processInfo.systemUptime
+        let shouldScanDirectory = bypassDirectoryCooldown || directoryMisses.withLock { misses in
+            guard let miss = misses[key] else { return true }
+            return miss.retryAt <= fallbackStarted || miss.modified != directoryModified
+        }
+        if shouldScanDirectory {
+            let fallback = directoryCandidates(excluding: Set(indexed.compactMap(\.fileURL)))
+            let milliseconds = Int((ProcessInfo.processInfo.systemUptime - fallbackStarted) * 1_000)
+            logger.info("Cache directory candidates collected; count=\(fallback.count); milliseconds=\(milliseconds)")
+            if let document = scan(fallback) { return document }
+        }
+
+        for (match, song) in lessCertain.sorted(by: { $0.match.score > $1.match.score }) {
             guard !isCancelled() else { return .empty }
-            guard let data = candidate.data() else {
-                continue
-            }
-            readableCandidates += 1
-            guard let response = try? JSONDecoder().decode(CatalogResponse.self, from: data) else {
-                decodeFailures += 1
-                continue
-            }
-            decodedResponses += 1
-
-            for song in response.data {
-                songsExamined += 1
-                guard song.relationships?.syllableLyrics?.data.first?.attributes.ttmlLocalizations != nil,
-                      let match = metadataMatcher.match(song.attributes, to: track) else {
-                    continue
+            if let document = parse(song, match: match) { return document }
+        }
+        if shouldScanDirectory, !isCancelled() {
+            let retryAt = ProcessInfo.processInfo.systemUptime + 60
+            directoryMisses.withLock { misses in
+                misses = misses.filter { $0.value.retryAt > fallbackStarted }
+                if misses.count >= 64, let oldest = misses.min(by: { $0.value.retryAt < $1.value.retryAt })?.key {
+                    misses.removeValue(forKey: oldest)
                 }
-                if best == nil || match.score > best!.match.score {
-                    best = (match, song)
-                }
+                misses[key] = DirectoryMiss(modified: directoryModified, retryAt: retryAt)
             }
+            logger.warning("No usable matching cached lyrics response found")
+        }
+        return .empty
+    }
 
-            // Exact metadata plus duration is definitive; candidates are newest first.
-            if best?.match.score ?? 0 >= 180 { break }
-        }
-
-        guard !isCancelled() else { return .empty }
-        logger.info(
-            "Lyrics cache scan finished; readable=\(readableCandidates); decoded=\(decodedResponses); "
-                + "decodeFailures=\(decodeFailures); songs=\(songsExamined); "
-                + "bestScore=\(best?.match.score ?? 0)"
-        )
-        guard let song = best?.song else {
-            logger.warning("No matching cached lyrics response found")
-            return .empty
-        }
-        if let match = best?.match {
-            logger.info("Lyrics metadata matched; evidence=\(match.evidence)")
-        }
+    private func parse(_ song: CatalogSong, match: TrackMetadataMatch) -> LyricsDocument? {
+        logger.info("Lyrics metadata matched; evidence=\(match.evidence)")
         guard let rawTTML = song.relationships?.syllableLyrics?.data.first?.attributes.ttmlLocalizations,
               let selection = localizedTTML(from: rawTTML) else {
             logger.warning("Matching response has an unsupported or empty ttmlLocalizations value")
-            return .empty
+            return nil
         }
         logger.info("Lyrics localization selected; locale=\(selection.locale ?? "unlabeled")")
         let parsed: ParsedAppleTTML
@@ -90,11 +118,11 @@ final class AppleMusicCacheLyricsProvider: @unchecked Sendable {
             parsed = try AppleTTMLParser.parse(selection.primaryTTML)
         } catch {
             logger.error("TTML parsing failed: \(error.localizedDescription)")
-            return .empty
+            return nil
         }
         guard !parsed.lines.isEmpty else {
             logger.warning("TTML parsed successfully but contained no lyric lines")
-            return .empty
+            return nil
         }
         let enrichedLines = enrich(
             parsed.lines,
@@ -120,108 +148,74 @@ final class AppleMusicCacheLyricsProvider: @unchecked Sendable {
 
     // MARK: - Cache index
 
-    private func candidates(isCancelled: () -> Bool) -> [CacheCandidate] {
-        let indexed = indexedCandidates()
-        guard !isCancelled() else { return [] }
-        var candidates = indexed
-        var indexedPaths = Set(indexed.compactMap(\.fileURL))
-
-        // The database is a private implementation detail. Always append recent
-        // files as a fallback because an index can exist while containing stale
-        // paths after a Music or macOS update.
+    private func directoryCandidates(excluding indexedPaths: Set<URL>) -> [CacheCandidate] {
+        // The database may contain stale paths after a Music or macOS update.
         let keys: Set<URLResourceKey> = [.contentModificationDateKey, .isRegularFileKey]
         guard let urls = try? fileManager.contentsOfDirectory(
             at: cacheDirectory,
             includingPropertiesForKeys: Array(keys),
             options: [.skipsHiddenFiles]
         ) else {
-            logger.warning(
-                "Cache data directory is unavailable; path=\(cacheDirectory.path); "
-                    + "indexedCandidates=\(indexed.count)"
-            )
-            return candidates
-        }
-
-        let recentFiles = urls
-            .filter { (try? $0.resourceValues(forKeys: keys).isRegularFile) == true }
-            .sorted {
-                let lhs = try? $0.resourceValues(forKeys: keys).contentModificationDate
-                let rhs = try? $1.resourceValues(forKeys: keys).contentModificationDate
-                return (lhs ?? .distantPast) > (rhs ?? .distantPast)
-            }
-            .prefix(maximumCandidates)
-        for url in recentFiles where indexedPaths.insert(url).inserted {
-            candidates.append(.file(url))
-        }
-        let inlineCount = indexed.filter { $0.isInline }.count
-        logger.info(
-            "Cache candidates collected; indexed=\(indexed.count); inline=\(inlineCount); "
-                + "directoryFallback=\(candidates.count - indexed.count)"
-        )
-        return candidates
-    }
-
-    private func indexedCandidates() -> [CacheCandidate] {
-        guard fileManager.isReadableFile(atPath: databaseURL.path),
-              fileManager.isExecutableFile(atPath: "/usr/bin/sqlite3") else {
-            logger.warning(
-                "Cache database or sqlite3 is unavailable; databaseReadable="
-                    + "\(fileManager.isReadableFile(atPath: databaseURL.path))"
-            )
+            logger.warning("Cache data directory is unavailable; path=\(cacheDirectory.path)")
             return []
         }
 
+        return urls
+            .compactMap { url -> (URL, Date)? in
+                guard !indexedPaths.contains(url), let values = try? url.resourceValues(forKeys: keys),
+                      values.isRegularFile == true else { return nil }
+                return (url, values.contentModificationDate ?? .distantPast)
+            }
+            .sorted { $0.1 > $1.1 }
+            .prefix(maximumCandidates)
+            .map { .file($0.0) }
+    }
+
+    private func indexedCandidates(limit: Int, isCancelled: () -> Bool) -> [CacheCandidate] {
+        guard fileManager.isReadableFile(atPath: databaseURL.path) else { return [] }
+
+        var database: OpaquePointer?
+        let opened = sqlite3_open_v2(databaseURL.path, &database, SQLITE_OPEN_READONLY, nil)
+        defer { sqlite3_close(database) }
+        guard opened == SQLITE_OK, let database else { return [] }
+
         let query = """
-        SELECT d.isDataOnFS || char(9) || hex(d.receiver_data)
+        SELECT d.isDataOnFS, d.receiver_data
         FROM cfurl_cache_response r
         JOIN cfurl_cache_receiver_data d USING(entry_ID)
         WHERE r.request_key LIKE '%syllable-lyrics%'
         ORDER BY r.time_stamp DESC
-        LIMIT \(maximumCandidates);
+        LIMIT ?;
         """
-
-        let process = Process()
-        let output = Pipe()
-        let errorOutput = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
-        process.arguments = ["-readonly", databaseURL.path, query]
-        process.standardOutput = output
-        process.standardError = errorOutput
-
-        do {
-            try process.run()
-            let data = output.fileHandleForReading.readDataToEndOfFile()
-            let errorData = errorOutput.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
-            guard process.terminationStatus == 0 else {
-                let message = String(data: errorData, encoding: .utf8)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? "unknown sqlite3 error"
-                logger.error("Cache database query failed (\(process.terminationStatus)): \(message)")
-                return []
-            }
-            guard let raw = String(data: data, encoding: .utf8) else {
-                logger.error("Cache database query returned non-UTF-8 index output")
-                return []
-            }
-            return raw.components(separatedBy: .newlines).compactMap { row in
-                let fields = row.split(separator: "\t", maxSplits: 1).map(String.init)
-                guard fields.count == 2, let payload = Data(hexEncoded: fields[1]) else {
-                    return nil
-                }
-                if fields[0] == "1",
-                   let name = String(data: payload, encoding: .utf8),
-                   let url = cacheFileURL(named: name) {
-                    return .file(url)
-                }
-                if fields[0] == "0" {
-                    return .inline(payload)
-                }
-                return nil
-            }
-        } catch {
-            logger.error("Unable to run cache database query: \(error.localizedDescription)")
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_prepare_v2(database, query, -1, &statement, nil) == SQLITE_OK,
+              sqlite3_bind_int(statement, 1, Int32(limit)) == SQLITE_OK else {
+            logger.warning("Cache index is unavailable: \(String(cString: sqlite3_errmsg(database)))")
             return []
         }
+
+        var candidates: [CacheCandidate] = []
+        while !isCancelled() {
+            let status = sqlite3_step(statement)
+            if status == SQLITE_DONE { return candidates }
+            guard status == SQLITE_ROW else {
+                logger.warning("Cache index read failed: \(String(cString: sqlite3_errmsg(database)))")
+                return []
+            }
+            guard let bytes = sqlite3_column_blob(statement, 1) else { continue }
+            let count = Int(sqlite3_column_bytes(statement, 1))
+            let payload = Data(bytes: bytes, count: count)
+            switch sqlite3_column_int(statement, 0) {
+            case 0: candidates.append(.inline(payload))
+            case 1:
+                if let name = String(data: payload, encoding: .utf8), let url = cacheFileURL(named: name) {
+                    candidates.append(.file(url))
+                }
+            default: break
+            }
+        }
+        return []
     }
 
     private func cacheFileURL(named name: String) -> URL? {
@@ -710,11 +704,6 @@ private enum CacheCandidate {
         return url
     }
 
-    var isInline: Bool {
-        guard case .inline = self else { return false }
-        return true
-    }
-
     func data() -> Data? {
         switch self {
         case .file(let url):
@@ -725,21 +714,6 @@ private enum CacheCandidate {
     }
 }
 
-private extension Data {
-    init?(hexEncoded value: String) {
-        guard value.count.isMultiple(of: 2) else { return nil }
-        var bytes: [UInt8] = []
-        bytes.reserveCapacity(value.count / 2)
-        var index = value.startIndex
-        while index < value.endIndex {
-            let end = value.index(index, offsetBy: 2)
-            guard let byte = UInt8(value[index..<end], radix: 16) else { return nil }
-            bytes.append(byte)
-            index = end
-        }
-        self.init(bytes)
-    }
-}
 
 private struct CatalogResponse: Decodable {
     let data: [CatalogSong]

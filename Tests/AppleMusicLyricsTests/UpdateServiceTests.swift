@@ -29,6 +29,14 @@ final class UpdateServiceTests: XCTestCase {
         }
     }
 
+    func testAcceptsRenamedAppleSiliconDiskImages() throws {
+        let service = UpdateService(currentVersion: "1.5.1")
+        for name in ["Just-For-Music-arm64.dmg", "Just-For-Music-1.6.0.dmg"] {
+            let data = releaseJSON(tag: "v1.6.0", diskImageName: name)
+            XCTAssertEqual(try service.availableUpdate(from: data)?.assetName, name)
+        }
+    }
+
     func testIgnoresCurrentAndPrereleaseVersions() throws {
         let service = UpdateService(currentVersion: "1.5.1")
 
@@ -90,12 +98,14 @@ final class UpdateServiceTests: XCTestCase {
         tag: String,
         prerelease: Bool = false,
         downloadBaseURL: String? = nil,
-        architecture: String = "arm64"
+        architecture: String = "arm64",
+        diskImageName: String? = nil
     ) -> Data {
         let baseURL = downloadBaseURL
             ?? "https://github.com/Takpap/apple-music-lyrics/releases/download/\(tag)"
         let version = String(tag.drop(while: { $0 == "v" }))
         let assetPrefix = "Apple-Music-Lyrics-\(version)-macos-\(architecture)"
+        let diskImageName = diskImageName ?? "\(assetPrefix).dmg"
         let object: [String: Any] = [
             "tag_name": tag,
             "html_url": "https://github.com/Takpap/apple-music-lyrics/releases/tag/\(tag)",
@@ -107,8 +117,8 @@ final class UpdateServiceTests: XCTestCase {
                     "browser_download_url": "\(baseURL)/\(assetPrefix).zip"
                 ],
                 [
-                    "name": "\(assetPrefix).dmg",
-                    "browser_download_url": "\(baseURL)/\(assetPrefix).dmg"
+                    "name": diskImageName,
+                    "browser_download_url": "\(baseURL)/\(diskImageName)"
                 ],
                 [
                     "name": "SHA256SUMS.txt",
