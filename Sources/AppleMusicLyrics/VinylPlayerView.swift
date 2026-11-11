@@ -12,7 +12,6 @@ final class VinylPlayerView: NSView {
     private let grooves = CAShapeLayer()
     private let cover = CALayer()
     private let spindle = CAShapeLayer()
-    private let recordShadow = CALayer()
     private let reflection = CAGradientLayer()
     private let reflectionMask = CAShapeLayer()
     private let arm = CAShapeLayer()
@@ -51,14 +50,8 @@ final class VinylPlayerView: NSView {
         reflection.shouldRasterize = true
         updateRasterizationScale()
         layer?.addSublayer(record)
-        recordShadow.backgroundColor = NSColor.black.cgColor
-        recordShadow.shadowColor = NSColor.black.cgColor
-        recordShadow.shadowOpacity = 0.32
-        recordShadow.shadowRadius = 9
-        recordShadow.shadowOffset = CGSize(width: 0, height: -4)
-        layer?.insertSublayer(recordShadow, below: record)
-        surface.colors = [NSColor(white: 0.05, alpha: 1).cgColor, NSColor(white: 0.08, alpha: 1).cgColor,
-                          NSColor(white: 0.035, alpha: 1).cgColor]
+        surface.colors = [NSColor(white: 0.09, alpha: 1).cgColor, NSColor(white: 0.14, alpha: 1).cgColor,
+                          NSColor(white: 0.065, alpha: 1).cgColor]
         surface.startPoint = CGPoint(x: 0, y: 0)
         surface.endPoint = CGPoint(x: 1, y: 1)
         record.addSublayer(surface)
@@ -366,19 +359,16 @@ final class VinylPlayerView: NSView {
         record.position = center
         record.cornerRadius = diameter / 2
         let discFrame = CGRect(x: center.x - diameter / 2, y: center.y - diameter / 2, width: diameter, height: diameter)
-        recordShadow.frame = discFrame
-        recordShadow.cornerRadius = diameter / 2
-        recordShadow.shadowPath = CGPath(ellipseIn: recordShadow.bounds, transform: nil)
         surface.frame = record.bounds
         surface.cornerRadius = diameter / 2
         let rings = CGMutablePath()
-        for index in 0..<30 {
-            let inset = CGFloat(index) * diameter * 0.004 + 3
+        for index in 0..<24 {
+            let inset = diameter * (0.008 + CGFloat(index) * 0.004)
             rings.addEllipse(in: record.bounds.insetBy(dx: inset, dy: inset))
         }
         grooves.frame = record.bounds
         grooves.path = rings
-        let coverInset = diameter * 0.17
+        let coverInset = diameter * 0.11
         cover.frame = record.bounds.insetBy(dx: coverInset, dy: coverInset)
         cover.cornerRadius = cover.bounds.width / 2
         cover.backgroundColor = NSColor(white: 0.22, alpha: 1).cgColor
@@ -397,10 +387,10 @@ final class VinylPlayerView: NSView {
         needle.addCurve(to: CGPoint(x: diameter * 0.32, y: -diameter * 0.25),
                         control1: CGPoint(x: diameter * 0.12, y: -diameter * 0.12),
                         control2: CGPoint(x: diameter * 0.21, y: -diameter * 0.23))
-        let tip = CGPoint(x: diameter * 0.48, y: -diameter * 0.28)
+        let tip = CGPoint(x: diameter * 0.56, y: -diameter * 0.28)
         needle.addLine(to: tip)
         arm.path = needle
-        arm.lineWidth = max(2.8, diameter * 0.017)
+        arm.lineWidth = min(6, max(2.8, diameter * 0.017))
         armMidtone.path = needle
         armMidtone.lineWidth = arm.lineWidth * 0.72
         armMidtone.position.y = arm.lineWidth * 0.08

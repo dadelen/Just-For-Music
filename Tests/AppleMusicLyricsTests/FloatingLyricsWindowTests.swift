@@ -35,14 +35,17 @@ final class FloatingLyricsWindowTests: XCTestCase {
         let originalMode = AppPreferences.floatingLyricsMode
         let originalSize = AppPreferences.floatingLyricsVinylSize
         let originalLock = AppPreferences.floatingPositionLocked
+        let originalFrames = AppPreferences.floatingLyricsFramesByDisplay
         defer {
             AppPreferences.floatingLyricsMode = originalMode
             AppPreferences.floatingLyricsVinylSize = originalSize
             AppPreferences.floatingPositionLocked = originalLock
+            AppPreferences.floatingLyricsFramesByDisplay = originalFrames
         }
         AppPreferences.floatingLyricsMode = .vinyl
         AppPreferences.floatingLyricsVinylSize = FloatingLyricsMode.minimumVinylSize
         AppPreferences.floatingPositionLocked = false
+        AppPreferences.floatingLyricsFramesByDisplay = [:]
 
         let controller = FloatingLyricsController()
         let fields = Mirror(reflecting: controller).children
@@ -53,9 +56,21 @@ final class FloatingLyricsWindowTests: XCTestCase {
         XCTAssertEqual(panel.frame.size, FloatingLyricsMode.minimumVinylSize)
 
         panel.setContentSize(NSSize(width: 1200, height: 600))
-        XCTAssertEqual(panel.frame.size, FloatingLyricsMode.maximumVinylSize)
+        let available = try XCTUnwrap(panel.screen ?? NSScreen.main).visibleFrame
+        XCTAssertEqual(panel.frame.size, NSSize(width: min(1200, available.width), height: min(600, available.height)))
         panel.setContentSize(NSSize(width: 350, height: 180))
         XCTAssertEqual(panel.frame.size, FloatingLyricsMode.minimumVinylSize)
+
+        let vinyl = try XCTUnwrap(fields.first { $0.label == "vinyl" }?.value as? NSView)
+        for size in [NSSize(width: 1200, height: 260), NSSize(width: 640, height: 1000)] {
+            panel.setContentSize(size)
+            vinyl.layoutSubtreeIfNeeded()
+            let record = try XCTUnwrap(vinyl.layer?.sublayers?.first { $0.animation(forKey: "rotation") != nil })
+            XCTAssertEqual(record.bounds.width, record.bounds.height)
+            XCTAssertGreaterThan(canvas.bounds.width, 0)
+            XCTAssertGreaterThan(canvas.bounds.height, 0)
+            XCTAssertFalse(canvas.frame.intersects(vinyl.frame))
+        }
 
         let custom = NSSize(width: 770, height: 340)
         panel.setContentSize(custom)
@@ -84,7 +99,7 @@ final class FloatingLyricsWindowTests: XCTestCase {
         XCTAssertFalse(panel.ignoresMouseEvents)
         XCTAssertTrue(panel.canBecomeKey)
         XCTAssertEqual(panel.frame.size, custom)
-        XCTAssertEqual(panel.contentMaxSize, FloatingLyricsMode.maximumVinylSize)
+        XCTAssertEqual(panel.contentMaxSize, try XCTUnwrap(panel.screen ?? NSScreen.main).visibleFrame.size)
     }
 
     func testGlassTransparencyFadesOnlyTheFloatingBackdrop() throws {
@@ -134,18 +149,18 @@ final class FloatingLyricsWindowTests: XCTestCase {
             let filter = layer.filters?.first as? CIFilter
             return (filter?.value(forKey: kCIInputRadiusKey) as? NSNumber)?.doubleValue ?? 0
         }
-        XCTAssertEqual(blurRadius(on: nextLine), maximumBlur * 0.4, accuracy: 0.001)
+        XCTAssertEqual(blurRadius(on: nextLine), maximumBlur, accuracy: 0.001)
         XCTAssertTrue(panel.hasShadow)
         controller.setGlassTransparency(0.95)
         XCTAssertEqual(material.alphaValue, 0.05, accuracy: 0.001)
-        XCTAssertEqual(blurRadius(on: nextLine), maximumBlur * 0.05, accuracy: 0.001)
+        XCTAssertEqual(blurRadius(on: nextLine), maximumBlur, accuracy: 0.001)
         XCTAssertFalse(panel.hasShadow)
 
         controller.setGlassTransparency(1)
         XCTAssertTrue(material.isHidden)
         XCTAssertFalse(surface.content.isHidden)
-        XCTAssertFalse(canvas.layerUsesCoreImageFilters)
-        XCTAssertEqual(blurRadius(on: nextLine), 0)
+        XCTAssertTrue(canvas.layerUsesCoreImageFilters)
+        XCTAssertEqual(blurRadius(on: nextLine), maximumBlur, accuracy: 0.001)
         XCTAssertEqual(nextLine.opacity, contextOpacity)
         XCTAssertLessThan(nextLine.opacity, currentLine.opacity)
         XCTAssertEqual(blurRadius(on: currentLine), 0)
@@ -159,6 +174,22 @@ final class FloatingLyricsWindowTests: XCTestCase {
         XCTAssertEqual(blurRadius(on: currentLine), 0)
         XCTAssertTrue(panel.hasShadow)
 
+        let mask = try XCTUnwrap(canvas.layer?.mask as? CAGradientLayer)
+        let originalLocations = mask.locations
+        for opacity in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            controller.setGlassTransparency(1 - opacity)
+            XCTAssertEqual(material.alphaValue, opacity, accuracy: 0.001)
+            XCTAssertEqual(panel.alphaValue, 1)
+            XCTAssertEqual(surface.content.alphaValue, 1)
+            XCTAssertEqual(currentLine.opacity, 1)
+            XCTAssertEqual(nextLine.opacity, contextOpacity)
+            XCTAssertEqual(blurRadius(on: nextLine), maximumBlur, accuracy: 0.001)
+            XCTAssertEqual(mask.locations, originalLocations)
+            let colors = try XCTUnwrap(mask.colors as? [CGColor])
+            XCTAssertEqual(colors.map(\.alpha), [0, 1, 1, 0])
+        }
+        controller.setGlassTransparency(0)
+
         UserDefaults.standard.set(false, forKey: shadowKey)
         controller.updateBackdropAppearance()
         XCTAssertFalse(panel.hasShadow)
@@ -167,6 +198,60 @@ final class FloatingLyricsWindowTests: XCTestCase {
         UserDefaults.standard.set(true, forKey: shadowKey)
         controller.updateBackdropAppearance()
         XCTAssertTrue(panel.hasShadow)
+    }
+
+    func testManualVinylSizeAndPositionPersistAcrossWindowRecreation() throws {
+        _ = NSApplication.shared
+        let originalMode = AppPreferences.floatingLyricsMode
+        let originalSize = AppPreferences.floatingLyricsVinylSize
+        let originalFrames = AppPreferences.floatingLyricsFramesByDisplay
+        let originalDisplay = AppPreferences.floatingLyricsLastDisplay
+        let originalLock = AppPreferences.floatingPositionLocked
+        defer {
+            AppPreferences.floatingLyricsMode = originalMode
+            AppPreferences.floatingLyricsVinylSize = originalSize
+            AppPreferences.floatingLyricsFramesByDisplay = originalFrames
+            AppPreferences.floatingLyricsLastDisplay = originalDisplay
+            AppPreferences.floatingPositionLocked = originalLock
+        }
+        AppPreferences.floatingLyricsMode = .vinyl
+        AppPreferences.floatingLyricsFramesByDisplay = [:]
+        AppPreferences.floatingPositionLocked = false
+        let controller = FloatingLyricsController()
+        let fields = Mirror(reflecting: controller).children
+        let panel = try XCTUnwrap(fields.first { $0.label == "panel" }?.value as? NSPanel)
+        let canvas = try XCTUnwrap(fields.first { $0.label == "canvas" }?.value as? NSView)
+        let vinyl = try XCTUnwrap(fields.first { $0.label == "vinyl" }?.value as? NSView)
+        let screen = try XCTUnwrap(panel.screen ?? NSScreen.main)
+        let customSize = NSSize(width: min(1100, screen.visibleFrame.width), height: min(560, screen.visibleFrame.height))
+        panel.setContentSize(customSize)
+        controller.windowDidEndLiveResize(Notification(name: NSWindow.didEndLiveResizeNotification, object: panel))
+        let originalFrame = panel.frame
+        XCTAssertGreaterThan(canvas.frame.width, 0)
+        XCTAssertFalse(canvas.frame.intersects(vinyl.frame))
+        controller.savePendingPosition()
+        XCTAssertEqual(AppPreferences.floatingLyricsVinylSize, customSize)
+
+        let restored = FloatingLyricsController()
+        let restoredPanel = try XCTUnwrap(Mirror(reflecting: restored).children.first { $0.label == "panel" }?.value as? NSPanel)
+        XCTAssertEqual(restoredPanel.frame, originalFrame)
+    }
+
+    func testFloatingVisibilityFadeKeepsWindowAlphaAtOne() async throws {
+        _ = NSApplication.shared
+        let controller = FloatingLyricsController()
+        let panel = try XCTUnwrap(Mirror(reflecting: controller).children.first { $0.label == "panel" }?.value as? NSPanel)
+        defer { controller.setVisible(false, animated: false) }
+        controller.setVisible(true)
+        XCTAssertEqual(panel.alphaValue, 1)
+        try await Task.sleep(nanoseconds: 350_000_000)
+        XCTAssertEqual(panel.alphaValue, 1)
+        XCTAssertEqual(panel.contentView?.alphaValue, 1)
+        controller.setVisible(false)
+        XCTAssertEqual(panel.alphaValue, 1)
+        try await Task.sleep(nanoseconds: 250_000_000)
+        XCTAssertFalse(panel.isVisible)
+        XCTAssertEqual(panel.alphaValue, 1)
     }
 
     func testChangingFontSizePreservesTheActiveLineAndItsHighlight() throws {
@@ -363,7 +448,7 @@ final class FloatingLyricsWindowTests: XCTestCase {
         controller.setVisible(true, animated: false)
         defer { controller.setVisible(false, animated: false) }
 
-        for transparency in [0.6, 1.0] {
+        for transparency in [0.0, 0.25, 0.5, 0.75, 1.0] {
             controller.setGlassTransparency(transparency)
             try await Task.sleep(nanoseconds: 300_000_000)
             // Capture our own test window after the WindowServer composes it.

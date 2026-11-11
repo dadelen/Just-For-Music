@@ -6,7 +6,7 @@ import XCTest
 @MainActor
 final class VinylPlayerViewTests: XCTestCase {
     func testBothSizesKeepRecordCircularAndArtworkInsideRecord() throws {
-        for size in [NSSize(width: 240, height: 190), NSSize(width: 320, height: 310)] {
+        for size in [NSSize(width: 240, height: 190), NSSize(width: 320, height: 310), NSSize(width: 800, height: 750)] {
             let view = VinylPlayerView(frame: NSRect(origin: .zero, size: size))
             view.layoutSubtreeIfNeeded()
             let record = try XCTUnwrap(view.layer?.sublayers?.first { $0.animation(forKey: "rotation") != nil })
@@ -16,6 +16,14 @@ final class VinylPlayerViewTests: XCTestCase {
             XCTAssertEqual(cover.bounds.width, cover.bounds.height)
             XCTAssertTrue(record.bounds.contains(cover.frame))
             XCTAssertEqual(cover.cornerRadius, cover.bounds.width / 2)
+            XCTAssertEqual(cover.bounds.width / record.bounds.width, 0.78, accuracy: 0.001)
+            view.update(playing: true, visible: false)
+            let root = try XCTUnwrap(view.layer)
+            let arm = try XCTUnwrap(root.sublayers?.compactMap { $0 as? CAShapeLayer }.first { $0.lineCap == .round })
+            let tip = arm.convert(try XCTUnwrap(arm.path).currentPoint, to: root)
+            let contactRadius = hypot(tip.x - record.position.x, tip.y - record.position.y)
+            XCTAssertGreaterThan(contactRadius, cover.bounds.width / 2)
+            XCTAssertLessThan(contactRadius, record.bounds.width / 2)
             let rotation = try XCTUnwrap(record.animation(forKey: "rotation") as? CABasicAnimation)
             XCTAssertEqual(rotation.duration, 6, accuracy: 0.001)
         }

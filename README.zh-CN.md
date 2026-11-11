@@ -6,6 +6,8 @@
 
 面向 Apple Music 的 macOS 状态栏工具，提供同步歌词、播放控制和桌面歌词浮窗。[下载 Apple Silicon 安装包](https://github.com/dadelen/Just-For-Music/releases/latest) · [更新记录](CHANGELOG.md)
 
+**使用建议** 建议在显示器端使用。
+
 原有 Apple Music 缓存读取、TTML 解析和播放监测继续复用。此次改造围绕状态栏、系统玻璃浮窗、黑胶和歌词翻译展开。
 
 ## 功能
@@ -16,7 +18,7 @@
 - 点击状态栏歌词或图标可展开圆角播放器，查看专辑封面、歌名和作者，也可拖动进度条。底部的「歌词」「设置」「退出」分别打开桌面歌词、设置窗口和退出应用。
 - 独立设置窗口分为桌面歌词、菜单栏、歌词效果、翻译、维护。
 - 桌面浮窗使用系统玻璃。左侧是黑胶和金属唱针，右侧是原文、译文及可选缓存音译。
-- 浮窗左上角的红、黄、绿点分别关闭浮窗、锁定位置和选择模式。黑胶模式解锁后可拖边缘或角落，在 640 × 260 pt 与 880 × 380 pt 之间缩放并记住尺寸。极简为 440 × 300 pt。
+- 浮窗左上角的红、黄、绿点分别关闭浮窗、锁定位置和选择模式。黑胶模式解锁后可拖边缘或角落自由调整宽高，最小为 640 × 260 pt，最大适配当前显示器的可用区域，并记住尺寸和位置。极简为 440 × 300 pt。
 - 锁定时，浮窗左上角的三个按钮和黑胶播放键仍可点击，其余区域会把点击传给后方窗口。点击黄点解锁。
 - 黑胶与真实封面每 12 拍旋转一圈，缺少 BPM 时每 6 秒一圈。点击唱针可播放或暂停。极简模式把歌名与歌手放在歌词上方，右侧显示播放控制。
 - 前奏及有可靠边界的间奏/尾奏显示三点进度，随真实播放位置高亮。低于 1.5 秒或没有可靠结束时间的空档不生成进度。
@@ -74,7 +76,7 @@ open "dist/Just-For-Music.app"
 ## 打包与自有更新源
 
 ```bash
-VERSION=1.0.3 BUILD_NUMBER=10 ./scripts/create-release-artifacts.sh
+VERSION=1.0.4 BUILD_NUMBER=13 ./scripts/create-release-artifacts.sh
 ```
 
 生成 arm64 ZIP、DMG 和 `SHA256SUMS.txt` 到 `dist/release/`。包内保留 MIT License。
@@ -84,7 +86,7 @@ VERSION=1.0.3 BUILD_NUMBER=10 ./scripts/create-release-artifacts.sh
 ```bash
 BUNDLE_IDENTIFIER=com.yourname.lyrics \
 UPDATE_REPOSITORY=yourname/your-repository \
-VERSION=1.0.3 BUILD_NUMBER=10 ./scripts/create-release-artifacts.sh
+VERSION=1.0.4 BUILD_NUMBER=13 ./scripts/create-release-artifacts.sh
 ```
 
 `v1.0` 提供源码归档。后续可用三段版本号标签触发安装包构建，工作流使用所在仓库作为更新源。

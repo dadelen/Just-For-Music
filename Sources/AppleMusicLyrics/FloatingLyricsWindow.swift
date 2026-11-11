@@ -8,7 +8,7 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
     private static let minimumBackdropOpacityForShadow: CGFloat = 0.15
     private static let occlusionPauseDelay: TimeInterval = 0.55
     private let panel = LyricsPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-    private let visibilityFade = PanelFade()
+    private let visibilityFade = PanelFade(usesContentOpacity: true)
     private let canvas = LyricsCanvasView(frame: .zero)
     private let trackDetails = NSView()
     private let title = NSTextField(labelWithString: "桌面歌词")
@@ -31,11 +31,18 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
         child.hidesOnDeactivate = false
         child.isReleasedWhenClosed = false
         child.isMovable = false
+        child.collectionBehavior = [
+            .canJoinAllSpaces,
+            .fullScreenAuxiliary,
+            .transient,
+            .ignoresCycle
+        ]
         return child
     }
     private let modeMenu = NSMenu()
     private var mode = AppPreferences.floatingLyricsMode
     private var vinylSize = AppPreferences.floatingLyricsVinylSize
+    private var resizePreviewTimer: Timer?
     private var restoringPosition = true
     private var positionSaveTimer: Timer?
     private var latestStatus: AppStatus = .idle
@@ -57,6 +64,12 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
         panel.backgroundColor = .clear
         panel.isOpaque = false
         panel.delegate = self
+        panel.collectionBehavior = [
+            .canJoinAllSpaces,
+            .fullScreenAuxiliary,
+            .transient,
+            .ignoresCycle
+        ]
         panel.contentView = background
         setGlassTransparency(AppPreferences.floatingLyricsGlassTransparency)
         background.content.addSubview(vinyl)
@@ -100,6 +113,7 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
 
     deinit {
         positionSaveTimer?.invalidate()
+        resizePreviewTimer?.invalidate()
         pendingOcclusionPause?.cancel()
         NotificationCenter.default.removeObserver(self)
         NSWorkspace.shared.notificationCenter.removeObserver(self)
@@ -110,7 +124,10 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
         canvas.invalidateGeometry()
     }
 
-    @objc private func screenChanged() { constrainToScreen() }
+    @objc private func screenChanged() {
+        updateSizeLimits()
+        constrainToScreen()
+    }
 
     func resetPlaybackClock() { canvas.resetPlaybackClock() }
 
@@ -146,7 +163,6 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
             panel.hasShadow = castsShadow
         }
         updateFocusOutline(selected: panel.isKeyWindow)
-        canvas.setBackdropOpacity(opacity)
     }
 
     private func updateFocusOutline(selected: Bool) {
@@ -161,8 +177,7 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
 
     func applyPreferences() {
         mode = AppPreferences.floatingLyricsMode
-        panel.contentMaxSize = FloatingLyricsMode.maximumVinylSize
-        panel.contentMinSize = mode == .vinyl ? FloatingLyricsMode.minimumVinylSize : .zero
+        updateSizeLimits()
         applyPositionLock()
 
         let oldFrame = panel.frame
@@ -185,10 +200,18 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
     private func applyWindowPlacement() {
         let alwaysOnTop = AppPreferences.floatingLyricsShowOverFullScreen
         let level: NSWindow.Level = alwaysOnTop ? .floating : .normal
-        var behavior: NSWindow.CollectionBehavior = [.stationary]
-        behavior.insert(AppPreferences.floatingLyricsSpaceBehavior == .allSpaces ? .canJoinAllSpaces : .moveToActiveSpace)
+        var behavior: NSWindow.CollectionBehavior = [
+            .canJoinAllSpaces,
+            .fullScreenAuxiliary,
+            .transient,
+            .ignoresCycle
+        ]
+        if AppPreferences.floatingLyricsSpaceBehavior == .currentDesktop {
+            behavior.remove(.canJoinAllSpaces)
+            behavior.insert(.moveToActiveSpace)
+        }
         if alwaysOnTop {
-            behavior.formUnion([.fullScreenAuxiliary, .canJoinAllApplications])
+            behavior.insert(.canJoinAllApplications)
         } else {
             behavior.insert(.fullScreenPrimary)
         }
@@ -214,19 +237,21 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
             artist.frame = NSRect(x: 0, y: 0, width: titleWidth, height: 18)
             canvas.frame = NSRect(x: 14, y: 14, width: frame.width - 28, height: frame.height - 102)
         } else {
+            let availableHeight = max(1, frame.height - 70)
             let minimum = FloatingLyricsMode.minimumVinylSize
-            let maximum = FloatingLyricsMode.maximumVinylSize
-            let widthProgress = (frame.width - minimum.width) / (maximum.width - minimum.width)
-            let heightProgress = (frame.height - minimum.height) / (maximum.height - minimum.height)
-            let scale = max(0, min(1, widthProgress, heightProgress))
-            let vinylWidth = 240 + 80 * scale
-            vinyl.frame = NSRect(x: 12, y: 58, width: vinylWidth, height: frame.height - 70)
+            let legacyLarge = FloatingLyricsMode.maximumVinylSize
+            let widthProgress = max(0, (frame.width - minimum.width) / (legacyLarge.width - minimum.width))
+            let heightProgress = max(0, (frame.height - minimum.height) / (legacyLarge.height - minimum.height))
+            let vinylWidth = min(frame.width * 0.4, 240 + 80 * min(widthProgress, heightProgress))
+            let vinylHeight = min(availableHeight, vinylWidth * 1.08 + 26)
+            vinyl.frame = NSRect(x: 12, y: 58 + (availableHeight - vinylHeight) / 2,
+                                 width: vinylWidth, height: vinylHeight)
             title.alignment = .center
             artist.alignment = .center
-            trackDetails.frame = NSRect(x: 22, y: 14, width: vinylWidth - 20, height: 40)
+            trackDetails.frame = NSRect(x: 22, y: vinyl.frame.minY - 44, width: vinylWidth - 20, height: 40)
             title.frame = NSRect(x: 0, y: 18, width: trackDetails.bounds.width, height: 22)
             artist.frame = NSRect(x: 0, y: 0, width: trackDetails.bounds.width, height: 17)
-            canvas.frame = NSRect(x: vinylWidth + 4, y: 14, width: frame.width - vinylWidth - 20, height: frame.height - 28)
+            canvas.frame = NSRect(x: vinylWidth + 24, y: 14, width: frame.width - vinylWidth - 40, height: frame.height - 28)
         }
         layoutWindowButtons()
         if vinyl.isNeedleButtonDetached { layoutNeedleButtonPanel() }
@@ -234,14 +259,15 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
 
     private func layoutWindowButtons() {
         let height = panel.contentRect(forFrameRect: panel.frame).height
-        let strip = NSRect(x: 10, y: height - 28, width: 60, height: 23)
+        let buttons = windowButtons.filter { !$0.isHidden }
+        let strip = NSRect(x: 10, y: height - 28, width: CGFloat(buttons.count) * 20, height: 23)
         let inChildPanel = closeButton.window !== panel
         if inChildPanel {
             let screenFrame = panel.convertToScreen(background.content.convert(strip, to: nil))
             windowButtonPanel.setFrame(screenFrame, display: true)
         }
         let origin = inChildPanel ? NSPoint.zero : strip.origin
-        for (index, button) in windowButtons.enumerated() {
+        for (index, button) in buttons.enumerated() {
             button.frame = NSRect(x: origin.x + CGFloat(index) * 20, y: origin.y, width: 20, height: strip.height)
         }
     }
@@ -257,6 +283,7 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
                 child.level = panel.level
                 child.collectionBehavior = panel.collectionBehavior
                 child.alphaValue = panel.alphaValue
+                content.alphaValue = background.alphaValue
                 for button in windowButtons {
                     button.removeFromSuperview()
                     content.addSubview(button)
@@ -293,6 +320,7 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
             child.level = panel.level
             child.collectionBehavior = panel.collectionBehavior
             child.alphaValue = panel.alphaValue
+            content.alphaValue = background.alphaValue
             content.wantsLayer = true
             layoutNeedleButtonPanel()
             vinyl.placeNeedleButton(in: content)
@@ -501,14 +529,40 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
         updateFocusOutline(selected: false)
     }
 
+    private var availableFrame: NSRect {
+        (panel.screen ?? NSScreen.main)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+    }
+
+    private func updateSizeLimits() {
+        let available = availableFrame.size
+        let minimum = mode == .vinyl ? FloatingLyricsMode.minimumVinylSize : FloatingLyricsMode.minimalSize
+        panel.contentMinSize = NSSize(width: min(minimum.width, available.width),
+                                     height: min(minimum.height, available.height))
+        panel.contentMaxSize = mode == .vinyl ? available : panel.contentMinSize
+    }
+
+    private func fittingFrame(_ frame: NSRect) -> NSRect {
+        let area = availableFrame
+        let size = NSSize(width: min(area.width, max(panel.contentMinSize.width, frame.width)),
+                          height: min(area.height, max(panel.contentMinSize.height, frame.height)))
+        return NSRect(x: max(area.minX, min(frame.minX, area.maxX - size.width)),
+                      y: max(area.minY, min(frame.minY, area.maxY - size.height)),
+                      width: size.width, height: size.height)
+    }
+
+    func windowDidChangeScreen(_ notification: Notification) {
+        updateSizeLimits()
+        constrainToScreen()
+    }
+
     func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
-        mode == .vinyl ? FloatingLyricsMode.clampedVinylSize(frameSize) : panel.frame.size
+        mode == .vinyl ? fittingFrame(NSRect(origin: panel.frame.origin, size: frameSize)).size : panel.frame.size
     }
 
     func windowDidResize(_ notification: Notification) {
         if mode == .vinyl {
             let frame = panel.frame
-            let size = FloatingLyricsMode.clampedVinylSize(frame.size)
+            let size = fittingFrame(frame).size
             if frame.size != size {
                 // Some programmatic AppKit sizing paths bypass the resize limits.
                 let origin = NSPoint(x: frame.minX, y: frame.maxY - size.height)
@@ -517,10 +571,25 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
             }
         }
         layoutContent()
+        if panel.inLiveResize {
+            if resizePreviewTimer == nil {
+                let timer = Timer(timeInterval: 0.06, repeats: false) { [weak self] _ in
+                    self?.resizePreviewTimer = nil
+                    self?.canvas.invalidateGeometry()
+                }
+                resizePreviewTimer = timer
+                RunLoop.main.add(timer, forMode: .common)
+            }
+        } else {
+            canvas.invalidateGeometry()
+            schedulePositionSave()
+        }
     }
 
     func windowDidEndLiveResize(_ notification: Notification) {
         guard mode == .vinyl else { return }
+        resizePreviewTimer?.invalidate()
+        resizePreviewTimer = nil
         vinylSize = FloatingLyricsMode.clampedVinylSize(panel.frame.size)
         AppPreferences.floatingLyricsVinylSize = vinylSize
         canvas.invalidateGeometry()
@@ -552,7 +621,12 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
         guard let screen = panel.screen else { return }
         var frames = AppPreferences.floatingLyricsFramesByDisplay
         let id = displayID(screen)
-        let frame = NSStringFromRect(panel.frame)
+        let savedFrame = panel.frame
+        let frame = NSStringFromRect(savedFrame)
+        if mode == .vinyl {
+            vinylSize = FloatingLyricsMode.clampedVinylSize(savedFrame.size)
+            AppPreferences.floatingLyricsVinylSize = vinylSize
+        }
         if frames[id] != frame {
             frames[id] = frame
             AppPreferences.floatingLyricsFramesByDisplay = frames
@@ -571,7 +645,15 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
         let screens = NSScreen.screens.sorted { displayID($0) == AppPreferences.floatingLyricsLastDisplay && displayID($1) != AppPreferences.floatingLyricsLastDisplay }
         for screen in screens {
             if let stored = frames[displayID(screen)] {
-                panel.setFrameOrigin(NSRectFromString(stored).origin)
+                let frame = NSRectFromString(stored)
+                guard [frame.minX, frame.minY, frame.width, frame.height].allSatisfy(\.isFinite),
+                      frame.width > 0, frame.height > 0 else { continue }
+                panel.setFrameOrigin(frame.origin)
+                updateSizeLimits()
+                if mode == .vinyl, frame.width >= FloatingLyricsMode.minimumVinylSize.width,
+                   frame.height >= FloatingLyricsMode.minimumVinylSize.height {
+                    panel.setFrame(frame, display: false)
+                }
                 constrainToScreen()
                 return
             }
@@ -580,12 +662,8 @@ final class FloatingLyricsController: NSObject, NSWindowDelegate {
     }
 
     private func constrainToScreen() {
-        guard let screen = panel.screen ?? NSScreen.main else { return }
-        let area = screen.visibleFrame
-        var origin = panel.frame.origin
-        origin.x = max(area.minX, min(origin.x, area.maxX - panel.frame.width))
-        origin.y = max(area.minY, min(origin.y, area.maxY - panel.frame.height))
-        panel.setFrameOrigin(origin)
+        let frame = fittingFrame(panel.frame)
+        if frame != panel.frame { panel.setFrame(frame, display: false) }
     }
 }
 
@@ -730,7 +808,7 @@ private final class LyricsCanvasView: NSView {
     private var isWindowVisible = false
     private var showsTranslation = true
     private var showsTransliteration = true
-    private var contextBlurRadius = AnimationSpec.maximumContextBlurRadius
+    private let contextBlurRadius = AnimationSpec.maximumContextBlurRadius
     private var hoveredLineIndex: Int?
     private var pointerInside = false
     private var browsingIndex: Int?
@@ -824,25 +902,6 @@ private final class LyricsCanvasView: NSView {
     func setPointerInside(_ inside: Bool) {
         pointerInside = inside
         if !inside { updateHoveredLine(nil) }
-    }
-
-    func setBackdropOpacity(_ opacity: CGFloat) {
-        let radius = AnimationSpec.maximumContextBlurRadius * opacity
-        guard radius != contextBlurRadius else { return }
-        contextBlurRadius = radius
-        if radius > 0 {
-            layerUsesCoreImageFilters = true
-            guard visualActiveIndex != nil, browsingIndex == nil,
-                  !NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast else { return }
-        }
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        for (index, row) in karaokeLayers.enumerated() where radius == 0 || (index != visualActiveIndex && !row.isHidden) {
-            row.setBlurRadius(radius)
-        }
-        CATransaction.commit()
-        // AppKit can use its normal render path once the last live blur is cleared.
-        if radius == 0 { layerUsesCoreImageFilters = false }
     }
 
     override func layout() {

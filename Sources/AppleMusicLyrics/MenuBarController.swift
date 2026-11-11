@@ -87,7 +87,7 @@ final class MenuBarController: NSObject {
         playerPanel.level = .popUpMenu
         playerPanel.hidesOnDeactivate = false
         playerPanel.isReleasedWhenClosed = false
-        playerPanel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+        playerPanel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary, .transient, .ignoresCycle]
         playerPanel.title = "播放器"
         let surface = GlassSurface(cornerRadius: MenuPlayerView.cornerRadius)
         playerPanel.contentView = surface
@@ -680,7 +680,8 @@ private final class MenuProgressSlider: NSSlider {
 private final class MenuPlayerView: NSView {
     static let size = NSSize(width: 420, height: 120)
     static let cornerRadius: CGFloat = 30
-    static let horizontalInset: CGFloat = 16
+    static let horizontalInset: CGFloat = 20
+    private static let artworkSize: CGFloat = 80
     private let artworkView = NSImageView()
     private let titleLabel = NSTextField(labelWithString: "播放器")
     private let subtitleLabel = NSTextField(labelWithString: "未播放歌曲")
@@ -714,7 +715,7 @@ private final class MenuPlayerView: NSView {
     private func configure() {
         artworkView.translatesAutoresizingMaskIntoConstraints = false
         artworkView.wantsLayer = true
-        artworkView.layer?.cornerRadius = 10
+        artworkView.layer?.cornerRadius = 8
         artworkView.layer?.masksToBounds = true
         artworkView.imageScaling = .scaleProportionallyUpOrDown
         setArtworkPlaceholder()
@@ -774,16 +775,16 @@ private final class MenuPlayerView: NSView {
 
         NSLayoutConstraint.activate([
             artworkView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Self.horizontalInset),
-            artworkView.topAnchor.constraint(equalTo: topAnchor, constant: 12),
-            artworkView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
-            artworkView.widthAnchor.constraint(equalTo: artworkView.heightAnchor),
+            artworkView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            artworkView.widthAnchor.constraint(equalToConstant: Self.artworkSize),
+            artworkView.heightAnchor.constraint(equalToConstant: Self.artworkSize),
 
-            slider.leadingAnchor.constraint(equalTo: artworkView.trailingAnchor, constant: Self.horizontalInset),
+            slider.leadingAnchor.constraint(equalTo: artworkView.trailingAnchor, constant: 16),
             slider.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -Self.horizontalInset),
             slider.topAnchor.constraint(equalTo: subtitleLabel.bottomAnchor, constant: 8),
             slider.heightAnchor.constraint(equalToConstant: 20),
 
-            titleLabel.topAnchor.constraint(equalTo: artworkView.topAnchor, constant: 6),
+            titleLabel.topAnchor.constraint(equalTo: artworkView.topAnchor, constant: 1),
             titleLabel.leadingAnchor.constraint(equalTo: slider.leadingAnchor),
             titleLabel.trailingAnchor.constraint(equalTo: slider.trailingAnchor),
             subtitleLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 2),

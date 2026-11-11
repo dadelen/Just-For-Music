@@ -25,7 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var isLoadingLyrics = false
     private var showsLoadingState = false
     private var lastLyricsAttempt = Date.distantPast
-    private var lyricsRetryDelay: TimeInterval = 2
+    private var lyricsRetryDelay: TimeInterval = 1.0
     private var lyricsTask: Task<Void, Never>?
     private var forceRefresh = false
     private var lastDisplayedLine: String?
@@ -496,7 +496,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             currentTrackKey = key
             currentLyrics = .empty
             forceRefresh = false
-            lyricsRetryDelay = 2
+            lyricsRetryDelay = 1.0
             loadLyrics(for: track, showLoading: true, bypassMemory: bypassMemory)
             apply(.loadingLyrics(track))
             return
@@ -518,7 +518,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Music may write the lyrics response shortly after the track-change
             // notification. Rescan quietly until the local cache catches up.
             if Date().timeIntervalSince(lastLyricsAttempt) >= lyricsRetryDelay {
-                lyricsRetryDelay = min(30, lyricsRetryDelay * 2)
+                lyricsRetryDelay = min(15, lyricsRetryDelay * 1.5)
                 loadLyrics(for: track, showLoading: false)
             }
             apply(.noLyrics(track))
@@ -538,19 +538,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         lyricsTask = Task { [weak self, lyricsService] in
             var document = await lyricsService.lyrics(for: track, bypassMemory: bypassMemory)
             if showLoading, document.lines.isEmpty {
-                guard !Task.isCancelled, self?.lyricsGeneration == generation else { return }
-                self?.showsLoadingState = false
-                if let latest = self?.latestTrack, latest.identityKey == key {
-                    self?.apply(.noLyrics(latest))
+                // Dense polling phase: poll every 250ms for up to ~2.5s while Music.app publishes the response.
+                let maxDenseAttempts = 10
+                for _ in 0..<maxDenseAttempts {
+                    do { try await Task.sleep(nanoseconds: 250_000_000) }
+                    catch { return }
+                    guard !Task.isCancelled, self?.lyricsGeneration == generation else { return }
+                    document = await lyricsService.lyrics(for: track, recentIndexOnly: true)
+                    if !document.lines.isEmpty {
+                        break
+                    }
                 }
-                // Give Music a short window to publish the response without rescanning the directory.
-                do { try await Task.sleep(nanoseconds: 400_000_000) }
-                catch { return }
-                guard !Task.isCancelled, self?.lyricsGeneration == generation else { return }
-                document = await lyricsService.lyrics(for: track, recentIndexOnly: true)
+                if document.lines.isEmpty {
+                    guard !Task.isCancelled, self?.lyricsGeneration == generation else { return }
+                    self?.showsLoadingState = false
+                    if let latest = self?.latestTrack, latest.identityKey == key {
+                        self?.apply(.noLyrics(latest))
+                    }
+                }
             }
             guard !Task.isCancelled, let self, self.currentTrackKey == key,
                   self.lyricsGeneration == generation else { return }
+            self.lastLyricsAttempt = Date()
             self.lyricsTask = nil
             self.sourceLyrics = document
             self.translatedLyrics = nil

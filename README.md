@@ -11,6 +11,8 @@ https://github.com/user-attachments/assets/425befea-16e8-4ab0-81e0-11004ee798d1
 
 A macOS menu bar companion for Apple Music with synced lyrics, playback controls, and a floating lyrics window. [Download for Apple Silicon](https://github.com/dadelen/Just-For-Music/releases/latest) · [Changelog](CHANGELOG.md)
 
+**Usage recommendation** A desktop or external monitor is recommended.
+
 The existing read-only Music cache provider, TTML parser and playback monitor remain the core.
 
 - Automatic and Icon Only status bar modes. Automatic shows scrolling original karaoke lyrics and three native status bar playback buttons.
@@ -18,7 +20,7 @@ The existing read-only Music cache provider, TTML parser and playback monitor re
 - A rounded player panel with real artwork, track details and a seek bar. Its text buttons open Lyrics and Settings or quit the app.
 - An independent settings window for Desktop Lyrics, Menu Bar, Lyric Effects, Translation, and Maintenance.
 - A system-glass floating panel: rotating vinyl on the left, original lyrics and smaller translations on the right. No custom background tint.
-- Red, yellow and green controls close the panel, lock its position and choose Vinyl or Minimal. Drag the unlocked Vinyl panel's edges or corners to resize it between 640 × 260 and 880 × 380 pt. Minimal mode places the track details and playback controls above the lyrics.
+- Red, yellow and green controls close the panel, lock its position and choose Vinyl or Minimal. Drag the unlocked Vinyl panel's edges or corners to adjust its width and height independently, from 640 × 260 pt up to the current display's available area. Its size and position are saved. Minimal mode places the track details and playback controls above the lyrics.
 - When locked, the window buttons and tonearm control stay interactive while the rest of the panel passes clicks through. Click the yellow button to unlock.
 - A softly lit vinyl record that turns once every 12 beats, or every six seconds when BPM is unavailable. The record keeps its angle when paused. Click the tonearm to play or pause.
 - Left-aligned lyrics emphasize the current line and soften nearby lines. Playback follow resumes four seconds after the last manual scroll.
@@ -62,7 +64,7 @@ Automatic mode chooses a conservative width, and Icon Only mode is available whe
 ## Distribution
 
 ```bash
-VERSION=1.0.3 BUILD_NUMBER=10 ./scripts/create-release-artifacts.sh
+VERSION=1.0.4 BUILD_NUMBER=13 ./scripts/create-release-artifacts.sh
 ```
 
 This creates arm64 ZIP/DMG archives and SHA256SUMS in `dist/release/`. Local builds are ad-hoc signed and not notarized.
@@ -72,7 +74,7 @@ Forks can override the defaults:
 ```bash
 BUNDLE_IDENTIFIER=com.yourname.lyrics \
 UPDATE_REPOSITORY=yourname/your-repository \
-VERSION=1.0.3 BUILD_NUMBER=10 ./scripts/create-release-artifacts.sh
+VERSION=1.0.4 BUILD_NUMBER=13 ./scripts/create-release-artifacts.sh
 ```
 
 The `v1.0` release contains source archives. Three-part version tags can trigger the installer build workflow. It uses the repository that runs the workflow as the update source.

@@ -29,8 +29,8 @@ enum FloatingLyricsMode: String, CaseIterable {
 
     static func clampedVinylSize(_ size: NSSize) -> NSSize {
         NSSize(
-            width: min(maximumVinylSize.width, max(minimumVinylSize.width, size.width)),
-            height: min(maximumVinylSize.height, max(minimumVinylSize.height, size.height))
+            width: size.width.isFinite ? max(minimumVinylSize.width, size.width) : minimumVinylSize.width,
+            height: size.height.isFinite ? max(minimumVinylSize.height, size.height) : minimumVinylSize.height
         )
     }
 }

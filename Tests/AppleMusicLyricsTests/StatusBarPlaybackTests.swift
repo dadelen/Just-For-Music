@@ -53,7 +53,7 @@ final class StatusBarPlaybackTests: XCTestCase {
         let elapsed = try XCTUnwrap(labels.first { $0.stringValue == "0:30" })
         let remaining = try XCTUnwrap(labels.first { $0.stringValue == "-1:30" })
         XCTAssertEqual(cover.image?.size, NSSize(width: 96, height: 96))
-        XCTAssertEqual(cover.layer?.cornerRadius, 10)
+        XCTAssertEqual(cover.layer?.cornerRadius, 8)
         XCTAssertTrue(cover.layer?.masksToBounds == true)
         XCTAssertTrue(slider.isEnabled)
         XCTAssertEqual(slider.knobThickness, 12)
