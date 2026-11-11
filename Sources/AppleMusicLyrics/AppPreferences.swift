@@ -227,8 +227,8 @@ enum AppPreferences {
 
     static var floatingLyricsGlassTransparency: Double {
         get {
-            let value = UserDefaults.standard.double(forKey: Key.glassTransparency)
-            return value.isFinite ? min(1, max(0, value)) : 0
+            guard let value = UserDefaults.standard.object(forKey: Key.glassTransparency) as? Double else { return 1 }
+            return value.isFinite ? min(1, max(0, value)) : 1
         }
         set {
             guard newValue.isFinite else { return }

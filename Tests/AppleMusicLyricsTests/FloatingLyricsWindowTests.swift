@@ -8,6 +8,19 @@ import XCTest
 
 @MainActor
 final class FloatingLyricsWindowTests: XCTestCase {
+    func testDefaultTransparencyIsFullyClearAndSavedValuesAreRespected() {
+        let defaults = UserDefaults.standard
+        let key = "floatingLyrics.glassTransparency"
+        let original = defaults.object(forKey: key)
+        defer { defaults.set(original, forKey: key) }
+        defaults.removeObject(forKey: key)
+        XCTAssertEqual(AppPreferences.floatingLyricsGlassTransparency, 1)
+        for value in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            AppPreferences.floatingLyricsGlassTransparency = value
+            XCTAssertEqual(AppPreferences.floatingLyricsGlassTransparency, value)
+        }
+    }
+
     func testOldVinylModesKeepTheirSizeAfterMigration() {
         let defaults = UserDefaults.standard
         let modeKey = AppPreferences.floatingLyricsModeKey
