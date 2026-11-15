@@ -30,4 +30,20 @@ final class DiagnosticLoggerTests: XCTestCase {
         XCTAssertTrue(previous.contains("older entry"))
         XCTAssertTrue(logger.contents().contains("newer entry"))
     }
+
+    func testRepeatedWritesContinueAfterFlush() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let logger = DiagnosticLogger(directoryURL: directory)
+        for index in 0..<100 { logger.info("entry \(index)") }
+        logger.flush()
+        logger.info("after flush")
+        logger.flush()
+
+        let lines = logger.contents().components(separatedBy: .newlines).filter { !$0.isEmpty }
+        XCTAssertEqual(lines.count, 101)
+        XCTAssertEqual(lines.last?.contains("after flush"), true)
+    }
 }

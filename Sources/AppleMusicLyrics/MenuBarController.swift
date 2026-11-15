@@ -9,12 +9,11 @@ final class MenuBarController: NSObject {
 
     private static let footerHeight: CGFloat = 46
     private static let lyricSampleHorizon: TimeInterval = 1.5
-    // The menu bar inserts new items to the left of existing ones.
-    private let nextStatusItem = MenuBarController.makeStatusItem("Playback.Next", length: 26)
-    private let toggleStatusItem = MenuBarController.makeStatusItem("Playback.Toggle", length: 26)
-    private let previousStatusItem = MenuBarController.makeStatusItem("Playback.Previous", length: 26)
+    private static let playbackItemLength: CGFloat = 78
+    // A single unified status item keeps all three transport controls strictly together.
+    private let playbackStatusItem = MenuBarController.makeStatusItem("Playback.Controls", length: playbackItemLength)
     private let statusItem = MenuBarController.makeStatusItem("Lyrics", length: 180)
-    private var playbackStatusItems: [NSStatusItem] { [previousStatusItem, toggleStatusItem, nextStatusItem] }
+    private var playbackStatusItems: [NSStatusItem] { [playbackStatusItem] }
     private let playerPanel = PlayerPanel(
         contentRect: NSRect(x: 0, y: 0, width: MenuPlayerView.size.width,
                             height: MenuPlayerView.size.height + MenuBarController.footerHeight),
@@ -62,12 +61,10 @@ final class MenuBarController: NSObject {
             self?.onOpenMusic?()
         }
         configurePlayerPanel()
-        configurePlaybackItem(previousStatusItem, symbol: "backward.fill", label: "上一首", action: #selector(playPrevious))
-        configurePlaybackItem(toggleStatusItem, symbol: "play.fill", label: "播放", action: #selector(togglePlayback))
-        configurePlaybackItem(nextStatusItem, symbol: "forward.fill", label: "下一首", action: #selector(playNext))
+        configurePlaybackStatusItem()
         configureStatusItem()
         // The lyrics item is hidden while the floating card is open.
-        if let button = toggleStatusItem.button {
+        if let button = playbackStatusItem.button {
             let observer = StatusItemContentView()
             observer.onAppearanceChanged = { [weak self] in self?.scheduleAppearanceUpdate() }
             button.addSubview(observer)
@@ -169,62 +166,115 @@ final class MenuBarController: NSObject {
         guard lastControlState != track?.state else { return }
         lastControlState = track?.state
         updatePlaybackItems()
-        if let button = toggleStatusItem.button {
-            let playing = track?.state == .playing
-            setPlaybackIcon(playing ? "pause.fill" : "play.fill", label: playing ? "暂停" : "播放", on: button)
-        }
+        let playing = track?.state == .playing
+        updatePlaybackControlImage(playing: playing)
     }
 
-    private func configurePlaybackItem(_ item: NSStatusItem, symbol: String, label: String, action: Selector) {
-        guard let button = item.button else { return }
+    private func configurePlaybackStatusItem() {
+        guard let button = playbackStatusItem.button else { return }
         button.target = self
-        button.action = action
-        button.isEnabled = false
+        button.action = #selector(playbackControlClicked(_:))
+        button.isEnabled = true
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
-        setPlaybackIcon(symbol, label: label, on: button)
+        button.toolTip = "播放控制 · ⌥ 点击打开播放器"
+        button.setAccessibilityLabel("播放控制")
+        let prevAction = NSAccessibilityCustomAction(name: "上一首") { [weak self] in
+            self?.onPreviousTrack?()
+            return true
+        }
+        let toggleAction = NSAccessibilityCustomAction(name: "播放/暂停") { [weak self] in
+            self?.onTogglePlayPause?()
+            return true
+        }
+        let nextAction = NSAccessibilityCustomAction(name: "下一首") { [weak self] in
+            self?.onNextTrack?()
+            return true
+        }
+        button.setAccessibilityCustomActions([prevAction, toggleAction, nextAction])
+        updatePlaybackControlImage(playing: false)
     }
 
-    private func setPlaybackIcon(_ symbol: String, label: String, on button: NSStatusBarButton) {
-        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
-        image?.isTemplate = true
+    private func updatePlaybackControlImage(playing: Bool) {
+        guard let button = playbackStatusItem.button else { return }
+        let prevIcon = NSImage(systemSymbolName: "backward.fill", accessibilityDescription: "上一首")?
+            .withSymbolConfiguration(.init(pointSize: 13, weight: .semibold))
+        let toggleIcon = NSImage(systemSymbolName: playing ? "pause.fill" : "play.fill", accessibilityDescription: playing ? "暂停" : "播放")?
+            .withSymbolConfiguration(.init(pointSize: 13, weight: .semibold))
+        let nextIcon = NSImage(systemSymbolName: "forward.fill", accessibilityDescription: "下一首")?
+            .withSymbolConfiguration(.init(pointSize: 13, weight: .semibold))
+
+        let icons = [prevIcon, toggleIcon, nextIcon]
+        let width = Self.playbackItemLength
+        let segmentWidth: CGFloat = width / 3.0
+        let image = NSImage(size: NSSize(width: width, height: 18), flipped: false) { rect in
+            for (index, icon) in icons.enumerated() {
+                guard let icon else { continue }
+                let iconSize = icon.size
+                let x = CGFloat(index) * segmentWidth + (segmentWidth - iconSize.width) / 2
+                let y = (rect.height - iconSize.height) / 2
+                icon.draw(in: NSRect(x: x, y: y, width: iconSize.width, height: iconSize.height))
+            }
+            return true
+        }
+        image.isTemplate = true
         button.image = image
         button.imagePosition = .imageOnly
-        button.toolTip = "\(label) · 按住 Option 点击打开播放器"
-        button.setAccessibilityLabel(label)
+        button.imageScaling = .scaleNone
     }
 
     private func updatePlaybackItems() {
         let show = floatingLyricsVisible || AppPreferences.statusBarMode != .icon
-        let canPlay = lastControlState != nil
-        for item in playbackStatusItems {
-            if item.isVisible != show { item.isVisible = show }
-            item.button?.isEnabled = canPlay || floatingLyricsVisible
-            item.button?.appearsDisabled = !canPlay && floatingLyricsVisible
-        }
+        if playbackStatusItem.isVisible != show { playbackStatusItem.isVisible = show }
+        playbackStatusItem.button?.isEnabled = true
+        playbackStatusItem.button?.appearsDisabled = false
     }
 
-    @objc private func playPrevious(_ sender: NSStatusBarButton) {
-        performPlaybackAction(onPreviousTrack, from: sender)
-    }
-
-    @objc private func togglePlayback(_ sender: NSStatusBarButton) {
-        performPlaybackAction(onTogglePlayPause, from: sender)
-    }
-
-    @objc private func playNext(_ sender: NSStatusBarButton) {
-        performPlaybackAction(onNextTrack, from: sender)
-    }
-
-    private func performPlaybackAction(_ action: (() -> Void)?, from sender: NSStatusBarButton) {
+    @objc private func playbackControlClicked(_ sender: NSStatusBarButton) {
         let event = NSApp.currentEvent
-        let secondaryClick = event?.type == .rightMouseUp && sender.window != nil && event?.window === sender.window
-        if secondaryClick || NSEvent.modifierFlags.contains(.option) {
+        let secondaryClick = event?.type == .rightMouseUp
+            || event?.modifierFlags.contains(.option) == true
+            || NSEvent.modifierFlags.contains(.option)
+        if secondaryClick {
             statusButtonClicked(sender)
             return
         }
-        guard lastControlState != nil else { return }
         dismissPlayer()
-        action?()
+
+        let clickX = resolveClickLocationX(sender: sender, event: event)
+        let segmentWidth = sender.bounds.width / 3.0
+        if clickX < segmentWidth {
+            onPreviousTrack?()
+        } else if clickX < segmentWidth * 2 {
+            onTogglePlayPause?()
+        } else {
+            onNextTrack?()
+        }
+    }
+
+    private func resolveClickLocationX(sender: NSStatusBarButton, event: NSEvent?) -> CGFloat {
+        let width = sender.bounds.width > 0 ? sender.bounds.width : Self.playbackItemLength
+        let midX = width / 2.0
+
+        if let event {
+            let eventLoc = sender.convert(event.locationInWindow, from: nil)
+            if abs(eventLoc.x - midX) > 0.5 {
+                return eventLoc.x
+            }
+        }
+
+        if let window = sender.window {
+            let screenPoint = NSEvent.mouseLocation
+            let windowPoint = window.convertPoint(fromScreen: screenPoint)
+            let viewPoint = sender.convert(windowPoint, from: nil)
+            if viewPoint.x >= 0 && viewPoint.x <= width {
+                return viewPoint.x
+            }
+        }
+
+        if let event {
+            return sender.convert(event.locationInWindow, from: nil).x
+        }
+        return midX
     }
 
     private func configureStatusItem() {
@@ -262,7 +312,7 @@ final class MenuBarController: NSObject {
     }
 
     private func updateLyricsAppearance() {
-        let items = floatingLyricsVisible ? [toggleStatusItem, statusItem] : [statusItem, toggleStatusItem]
+        let items = floatingLyricsVisible ? [playbackStatusItem, statusItem] : [statusItem, playbackStatusItem]
         for item in items where item.isVisible {
             guard let button = item.button, button.window != nil else { continue }
             onLyricsAppearanceChanged?(button.effectiveAppearance.lyricsAppearance)
@@ -1367,9 +1417,10 @@ private final class KaraokeStatusTitleView: NSView {
 
     private func activateTimer() {
         guard renderingVisible, displayTimer == nil else { return }
-        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
             self?.needsDisplay = true
         }
+        timer.tolerance = 0.008
         displayTimer = timer
         RunLoop.main.add(timer, forMode: .common)
     }

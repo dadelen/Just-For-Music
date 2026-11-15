@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import XCTest
 @testable import AppleMusicLyrics
@@ -73,6 +74,17 @@ final class UpdateServiceTests: XCTestCase {
             expected
         )
         XCTAssertNil(UpdateService.expectedSHA256(in: contents, for: "missing.dmg"))
+    }
+
+    func testChunkedSHA256MatchesSinglePassDigest() throws {
+        let data = Data((0..<10_000).map { UInt8($0 % 251) })
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        try data.write(to: fileURL)
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+
+        let expected = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        XCTAssertEqual(try UpdateService.sha256(of: fileURL, chunkSize: 7), expected)
     }
 
     func testPublicGitHubUpdateAndVerifiedDownloadWhenEnabled() async throws {

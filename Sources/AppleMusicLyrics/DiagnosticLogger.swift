@@ -9,6 +9,8 @@ final class DiagnosticLogger: @unchecked Sendable {
     private let maximumBytes: UInt64
     private let queue = DispatchQueue(label: "music.diagnostics", qos: .utility)
     private let formatter: ISO8601DateFormatter
+    private var writeHandle: FileHandle?
+    private var writeOffset: UInt64 = 0
 
     let logFileURL: URL
     let previousLogFileURL: URL
@@ -67,7 +69,7 @@ final class DiagnosticLogger: @unchecked Sendable {
         queue.sync { ensureFileExists() }
     }
 
-    func flush() { queue.sync {} }
+    func flush() { queue.sync { closeWriteHandle() } }
 
     private func append(level: String, message: String) {
         let timestamp = Date()
@@ -75,26 +77,47 @@ final class DiagnosticLogger: @unchecked Sendable {
     }
 
     private func write(level: String, message: String, timestamp: Date) {
-        if let attributes = try? fileManager.attributesOfItem(atPath: logFileURL.path) {
-            if let size = attributes[.size] as? NSNumber, size.uint64Value >= maximumBytes {
-                rotate()
-            }
-        } else {
-            ensureFileExists()
+        var handle = writeHandle
+        if handle == nil {
+            guard let opened = openWriteHandle() else { return }
+            handle = opened
+        }
+        if writeOffset >= maximumBytes {
+            closeWriteHandle()
+            rotate()
+            guard let reopened = openWriteHandle() else { return }
+            handle = reopened
         }
         let sanitized = message.replacingOccurrences(of: "\n", with: " ")
         let line = "[\(formatter.string(from: timestamp))] [\(level)] \(sanitized)\n"
-        guard let data = line.data(using: .utf8),
-              let handle = try? FileHandle(forWritingTo: logFileURL) else {
-            return
-        }
+        guard let data = line.data(using: .utf8), let handle else { return }
         do {
-            try handle.seekToEnd()
             try handle.write(contentsOf: data)
-            try handle.close()
+            writeOffset += UInt64(data.count)
+        } catch {
+            closeWriteHandle()
+        }
+    }
+
+    private func openWriteHandle() -> FileHandle? {
+        ensureFileExists()
+        guard let handle = try? FileHandle(forWritingTo: logFileURL) else { return nil }
+        do {
+            writeOffset = try handle.seekToEnd()
+            writeHandle = handle
+            return handle
         } catch {
             try? handle.close()
+            return nil
         }
+    }
+
+    private func closeWriteHandle() {
+        guard let handle = writeHandle else { return }
+        writeHandle = nil
+        writeOffset = 0
+        try? handle.synchronize()
+        try? handle.close()
     }
 
     private func ensureFileExists() {

@@ -15,6 +15,7 @@ final class AppleMusicCacheLyricsProvider: @unchecked Sendable {
     }
 
     private let directoryMisses = OSAllocatedUnfairLock(initialState: [String: DirectoryMiss]())
+    private let decodedResponses = NSCache<NSURL, CatalogResponseBox>()
     private let maximumCandidates = 160
     private let logger = DiagnosticLogger.shared
     private let metadataMatcher = TrackMetadataMatcher()
@@ -31,6 +32,7 @@ final class AppleMusicCacheLyricsProvider: @unchecked Sendable {
                 .appendingPathComponent("Library/Caches/com.apple.Music", isDirectory: true)
         self.cacheDirectory = root.appendingPathComponent("fsCachedData", isDirectory: true)
         self.databaseURL = root.appendingPathComponent("Cache.db")
+        self.decodedResponses.countLimit = 256
     }
 
     func lyrics(for track: TrackInfo, recentIndexOnly: Bool = false,
@@ -45,15 +47,35 @@ final class AppleMusicCacheLyricsProvider: @unchecked Sendable {
         logger.info("Cache index collected; indexed=\(indexed.count); milliseconds=\(indexMilliseconds)")
 
         typealias Match = (match: TrackMetadataMatch, song: CatalogSong)
+        let decoder = JSONDecoder()
+        let target = TrackMetadataTarget(track)
         var lessCertain: [Match] = []
         func scan(_ candidates: [CacheCandidate]) -> LyricsDocument? {
             for candidate in candidates {
                 guard !isCancelled() else { return nil }
-                guard let data = candidate.data(),
-                      let response = try? JSONDecoder().decode(CatalogResponse.self, from: data) else { continue }
+                let response: CatalogResponse?
+                switch candidate {
+                case .file(let url):
+                    let key = url as NSURL
+                    let modDate = (try? fileManager.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
+                    if !bypassDirectoryCooldown,
+                       let cached = decodedResponses.object(forKey: key),
+                       cached.modifiedDate == modDate {
+                        response = cached.response
+                    } else if let data = candidate.data(),
+                              let decoded = try? decoder.decode(CatalogResponse.self, from: data) {
+                        decodedResponses.setObject(CatalogResponseBox(decoded, modifiedDate: modDate), forKey: key)
+                        response = decoded
+                    } else {
+                        response = nil
+                    }
+                case .inline(let data):
+                    response = try? decoder.decode(CatalogResponse.self, from: data)
+                }
+                guard let response else { continue }
                 let matches: [Match] = response.data.compactMap { song in
                     guard song.relationships?.syllableLyrics?.data.first?.attributes.ttmlLocalizations != nil,
-                          let match = metadataMatcher.match(song.attributes, to: track) else { return nil }
+                          let match = metadataMatcher.match(song.attributes, to: target) else { return nil }
                     return (match, song)
                 }.sorted { $0.match.score > $1.match.score }
 
@@ -114,11 +136,15 @@ final class AppleMusicCacheLyricsProvider: @unchecked Sendable {
         }
         logger.info("Lyrics localization selected; locale=\(selection.locale ?? "unlabeled")")
         let parsed: ParsedAppleTTML
-        do {
-            parsed = try AppleTTMLParser.parse(selection.primaryTTML)
-        } catch {
-            logger.error("TTML parsing failed: \(error.localizedDescription)")
-            return nil
+        if let parsedPrimary = selection.parsedPrimary {
+            parsed = parsedPrimary
+        } else {
+            do {
+                parsed = try AppleTTMLParser.parse(selection.primaryTTML)
+            } catch {
+                logger.error("TTML parsing failed: \(error.localizedDescription)")
+                return nil
+            }
         }
         guard !parsed.lines.isEmpty else {
             logger.warning("TTML parsed successfully but contained no lyric lines")
@@ -261,8 +287,11 @@ final class AppleMusicCacheLyricsProvider: @unchecked Sendable {
             return !["translation", "translit", "roman", "latn"].contains(where: value.contains)
         }
         let candidates = primaryKeys.isEmpty ? Array(localizations.keys) : primaryKeys
+        var parsedCandidates: [String: ParsedAppleTTML] = [:]
         let timedKeys = candidates.filter {
-            guard let ttml = localizations[$0], let parsed = try? AppleTTMLParser.parse(ttml) else { return false }
+            guard let ttml = localizations[$0],
+                  let parsed = try? AppleTTMLParser.parse(ttml) else { return false }
+            parsedCandidates[$0] = parsed
             return parsed.wordTiming == .exact
         }
         let selectedKey = LyricsLocaleMatcher.bestKey(
@@ -279,10 +308,17 @@ final class AppleMusicCacheLyricsProvider: @unchecked Sendable {
         let alternatives = localizations
             .filter { $0.key != key && $0.value != primary }
             .sorted { $0.key < $1.key }
-            .map { LocalizedTTMLAlternative(locale: $0.key, ttml: $0.value) }
+            .map {
+                LocalizedTTMLAlternative(
+                    locale: $0.key,
+                    ttml: $0.value,
+                    parsed: parsedCandidates[$0.key]
+                )
+            }
         let taggedLanguage = TTMLLanguageDetector.language(in: primary)
         return LocalizedTTMLSelection(
             primaryTTML: normalizedPrimary,
+            parsedPrimary: normalizedPrimary == primary ? parsedCandidates[key] : nil,
             locale: LyricsDocument.declaredLanguageCode(taggedLanguage) != nil ? taggedLanguage : key,
             alternatives: alternatives
         )
@@ -301,7 +337,8 @@ final class AppleMusicCacheLyricsProvider: @unchecked Sendable {
         var transliterations: [Int: String] = [:]
 
         for alternative in alternatives {
-            guard let parsed = try? AppleTTMLParser.parse(alternative.ttml) else { continue }
+            let parsed = alternative.parsed ?? (try? AppleTTMLParser.parse(alternative.ttml))
+            guard let parsed else { continue }
             let normalizedLocale = alternative.locale.lowercased()
             let isTransliteration = normalizedLocale.contains("latn")
                 || normalizedLocale.contains("roman")
@@ -313,10 +350,7 @@ final class AppleMusicCacheLyricsProvider: @unchecked Sendable {
                    abs(primaryLines[alternativeIndex].time - alternativeLine.time) <= 1 {
                     index = alternativeIndex
                 } else {
-                    index = primaryLines.indices.min {
-                        abs(primaryLines[$0].time - alternativeLine.time)
-                            < abs(primaryLines[$1].time - alternativeLine.time)
-                    }
+                    index = nearestLineIndex(to: alternativeLine.time, in: primaryLines)
                 }
                 guard let index,
                       abs(primaryLines[index].time - alternativeLine.time) <= 1,
@@ -343,6 +377,27 @@ final class AppleMusicCacheLyricsProvider: @unchecked Sendable {
             )
         }
     }
+
+    // Parser output is sorted by timestamp. Equal distances keep the earlier
+    // line, matching the previous linear scan's tie-breaking behavior.
+    private func nearestLineIndex(to time: TimeInterval, in lines: [LyricLine]) -> Int? {
+        guard !lines.isEmpty else { return nil }
+        var lowerBound = 0
+        var upperBound = lines.count
+        while lowerBound < upperBound {
+            let middle = (lowerBound + upperBound) / 2
+            if lines[middle].time < time {
+                lowerBound = middle + 1
+            } else {
+                upperBound = middle
+            }
+        }
+        if lowerBound == 0 { return 0 }
+        if lowerBound == lines.count { return lines.count - 1 }
+        let before = lines[lowerBound - 1].time
+        let after = lines[lowerBound].time
+        return time - before <= after - time ? lowerBound - 1 : lowerBound
+    }
 }
 
 private struct TrackMetadataMatch {
@@ -350,31 +405,42 @@ private struct TrackMetadataMatch {
     let evidence: String
 }
 
+private struct TrackMetadataTarget {
+    let title: ComparableMetadataText
+    let artist: ComparableMetadataText
+    let album: ComparableMetadataText
+    let duration: TimeInterval
+
+    init(_ track: TrackInfo) {
+        title = ComparableMetadataText(track.title)
+        artist = ComparableMetadataText(track.artist)
+        album = ComparableMetadataText(track.album)
+        duration = track.duration
+    }
+}
+
 private struct TrackMetadataMatcher {
-    func match(_ song: CatalogSongAttributes, to track: TrackInfo) -> TrackMetadataMatch? {
-        let wantedTitle = ComparableMetadataText(track.title)
+    func match(_ song: CatalogSongAttributes, to target: TrackMetadataTarget) -> TrackMetadataMatch? {
         let candidateTitle = ComparableMetadataText(song.name)
-        let titleMatch = wantedTitle.match(candidateTitle)
+        let titleMatch = target.title.match(candidateTitle)
         guard titleMatch != .none else { return nil }
 
         let durationDifference: TimeInterval? = {
-            guard track.duration > 0,
+            guard target.duration > 0,
                   let duration = song.durationInMillis,
                   duration > 0 else { return nil }
-            return abs(Double(duration) / 1000 - track.duration)
+            return abs(Double(duration) / 1000 - target.duration)
         }()
         if let durationDifference, durationDifference > 12 { return nil }
 
-        let wantedArtist = ComparableMetadataText(track.artist)
         let candidateArtist = ComparableMetadataText(song.artistName)
-        let artistMatch = wantedArtist.match(candidateArtist)
-        let artistMissing = wantedArtist.isEmpty || candidateArtist.isEmpty
-        let localizedArtist = wantedArtist.usesDifferentWritingSystem(from: candidateArtist)
+        let artistMatch = target.artist.match(candidateArtist)
+        let artistMissing = target.artist.isEmpty || candidateArtist.isEmpty
+        let localizedArtist = target.artist.usesDifferentWritingSystem(from: candidateArtist)
         let artistIsTrusted = artistMatch.isStrongIdentity
 
-        let wantedAlbum = ComparableMetadataText(track.album)
         let candidateAlbum = ComparableMetadataText(song.albumName ?? "")
-        let albumMatch = wantedAlbum.match(candidateAlbum)
+        let albumMatch = target.album.match(candidateAlbum)
         let albumIsTrusted = albumMatch.isStrongIdentity
 
         let durationIsTight = durationDifference.map { $0 <= 2 } == true
@@ -547,15 +613,18 @@ private struct ComparableMetadataText {
 
 private struct LocalizedTTMLSelection {
     let primaryTTML: String
+    let parsedPrimary: ParsedAppleTTML?
     let locale: String?
     let alternatives: [LocalizedTTMLAlternative]
 
     init(
         primaryTTML: String,
+        parsedPrimary: ParsedAppleTTML? = nil,
         locale: String? = nil,
         alternatives: [LocalizedTTMLAlternative]
     ) {
         self.primaryTTML = primaryTTML
+        self.parsedPrimary = parsedPrimary
         self.locale = locale
         self.alternatives = alternatives
     }
@@ -693,6 +762,7 @@ private enum TTMLLanguageDetector {
 private struct LocalizedTTMLAlternative {
     let locale: String
     let ttml: String
+    let parsed: ParsedAppleTTML?
 }
 
 private enum CacheCandidate {
@@ -714,6 +784,15 @@ private enum CacheCandidate {
     }
 }
 
+
+private final class CatalogResponseBox: @unchecked Sendable {
+    let response: CatalogResponse
+    let modifiedDate: Date?
+    init(_ response: CatalogResponse, modifiedDate: Date? = nil) {
+        self.response = response
+        self.modifiedDate = modifiedDate
+    }
+}
 
 private struct CatalogResponse: Decodable {
     let data: [CatalogSong]

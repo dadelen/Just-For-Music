@@ -14,6 +14,8 @@ final class PlaybackControls: NSView {
     var width: CGFloat { 3 * buttonWidth }
     private var buttons: [ActionButton] { [previous, play, next] }
 
+    override var mouseDownCanMoveWindow: Bool { false }
+
     init(buttonWidth: CGFloat, grouped: Bool = false) {
         self.buttonWidth = buttonWidth
         self.grouped = grouped
@@ -51,5 +53,11 @@ final class PlaybackControls: NSView {
         guard playing != isPlaying else { return }
         playing = isPlaying
         play.setSymbol(isPlaying ? "pause.fill" : "play.fill", label: isPlaying ? "暂停" : "播放")
+    }
+
+    func resetHover() {
+        for button in buttons {
+            button.layer?.backgroundColor = nil
+        }
     }
 }

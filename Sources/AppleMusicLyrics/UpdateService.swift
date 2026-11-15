@@ -171,8 +171,7 @@ final class UpdateService: @unchecked Sendable {
             for: request(for: update.downloadURL)
         )
         try Self.validate(downloadResponse)
-        let data = try Data(contentsOf: temporaryURL, options: .mappedIfSafe)
-        let actualHash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        let actualHash = try Self.sha256(of: temporaryURL)
         guard actualHash.caseInsensitiveCompare(expectedHash) == .orderedSame else {
             throw UpdateServiceError.checksumMismatch
         }
@@ -203,6 +202,20 @@ final class UpdateService: @unchecked Sendable {
             }
         }
         return nil
+    }
+
+    static func sha256(of fileURL: URL, chunkSize: Int = 1024 * 1024) throws -> String {
+        precondition(chunkSize > 0)
+        let handle = try FileHandle(forReadingFrom: fileURL)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while true {
+            try Task.checkCancellation()
+            let data = try handle.read(upToCount: chunkSize) ?? Data()
+            if data.isEmpty { break }
+            hasher.update(data: data)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     private func uniqueDestination(for assetName: String) -> URL {

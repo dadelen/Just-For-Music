@@ -8,6 +8,22 @@ import XCTest
 
 @MainActor
 final class FloatingLyricsWindowTests: XCTestCase {
+    func testUnchangedAccessibilityOptionsReuseTheExistingMaterial() throws {
+        _ = NSApplication.shared
+        let surface = GlassSurface(clearGlass: true, adjustableOpacity: true)
+        let before = Mirror(reflecting: surface).children.first { $0.label == "material" }?.value as? NSView
+        guard let before else { throw XCTSkip("Reduced transparency uses an opaque backdrop") }
+        let contentHost = surface.content.superview
+        _ = surface.perform(NSSelectorFromString("rebuildMaterial"))
+        _ = surface.perform(NSSelectorFromString("rebuildMaterial"))
+        let after = Mirror(reflecting: surface).children.first { $0.label == "material" }?.value as? NSView
+        XCTAssertTrue(after === before)
+        XCTAssertTrue(surface.content.superview === contentHost)
+        surface.backgroundOpacity = 0.5
+        surface.backgroundOpacity = 0.5
+        XCTAssertEqual(before.alphaValue, 0.5)
+    }
+
     func testDefaultTransparencyIsFullyClearAndSavedValuesAreRespected() {
         let defaults = UserDefaults.standard
         let key = "floatingLyrics.glassTransparency"
@@ -156,7 +172,7 @@ final class FloatingLyricsWindowTests: XCTestCase {
         let lineLayers = try XCTUnwrap(Mirror(reflecting: canvas).children.first { $0.label == "karaokeLayers" }?.value as? [CALayer])
         let currentLine = try XCTUnwrap(lineLayers.first)
         let nextLine = try XCTUnwrap(lineLayers.dropFirst().first)
-        let maximumBlur = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast ? 0.0 : 1.1
+        let maximumBlur = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast ? 0.0 : 0.825
         let contextOpacity = nextLine.opacity
         func blurRadius(on layer: CALayer) -> Double {
             let filter = layer.filters?.first as? CIFilter
@@ -333,7 +349,7 @@ final class FloatingLyricsWindowTests: XCTestCase {
         let menuBar = MenuBarController(floatingLyricsVisible: true)
         let fields = Mirror(reflecting: menuBar).children
         let lyricsItem = try XCTUnwrap(fields.first { $0.label == "statusItem" }?.value as? NSStatusItem)
-        let toggleItem = try XCTUnwrap(fields.first { $0.label == "toggleStatusItem" }?.value as? NSStatusItem)
+        let toggleItem = try XCTUnwrap(fields.first { $0.label == "playbackStatusItem" }?.value as? NSStatusItem)
         let toggle = try XCTUnwrap(toggleItem.button)
         XCTAssertFalse(lyricsItem.isVisible)
         menuBar.onLyricsAppearanceChanged = { controller.setMenuBarAppearance($0) }
@@ -380,6 +396,52 @@ final class FloatingLyricsWindowTests: XCTestCase {
                 }
             }
         }
+    }
+
+    func testOffscreenLyricRowsReleaseAndRegenerateTheirBitmaps() throws {
+        _ = NSApplication.shared
+        let controller = FloatingLyricsController()
+        let canvas = try XCTUnwrap(Mirror(reflecting: controller).children.first { $0.label == "canvas" }?.value as? NSView)
+        let lines: [LyricLine] = (0..<60).map { index in
+            let start = TimeInterval(index * 5)
+            let text = "Line \(index + 1)"
+            return LyricLine(
+                time: start,
+                text: text,
+                words: [LyricWord(text: text, start: start, end: start + 4)],
+                translation: "Translation \(index + 1)"
+            )
+        }
+        let lyrics = LyricsDocument(lines: lines, plainText: nil, source: "test", isSynced: true, wordTiming: .exact)
+        func show(at position: TimeInterval) {
+            let track = TrackInfo(title: "Test", artist: "", album: "", duration: 300,
+                                  position: position, state: .paused)
+            controller.setVisible(false, animated: false)
+            controller.apply(status: .showing(track: track, lyrics: lyrics, currentLine: "Line"))
+            controller.setVisible(true, animated: false)
+        }
+        func contents(of row: CALayer, label: String) throws -> AnyObject? {
+            let value = Mirror(reflecting: row).children.first { $0.label == label }?.value
+            return (value as? CALayer)?.contents as AnyObject?
+        }
+
+        show(at: 0)
+        defer { controller.setVisible(false, animated: false) }
+        let rows = try XCTUnwrap(Mirror(reflecting: canvas).children.first { $0.label == "karaokeLayers" }?.value as? [CALayer])
+        let nextRow = rows[1]
+        XCTAssertNotNil(try contents(of: nextRow, label: "upcomingLayer"))
+        XCTAssertNotNil(try contents(of: nextRow, label: "supplementaryLayer"))
+
+        // The row adjacent to the previous active row is intentionally kept for
+        // one transition; the next state update moves it outside the window.
+        show(at: 240)
+        show(at: 245)
+        XCTAssertNil(try contents(of: nextRow, label: "upcomingLayer"))
+        XCTAssertNil(try contents(of: nextRow, label: "supplementaryLayer"))
+
+        show(at: 0)
+        XCTAssertNotNil(try contents(of: nextRow, label: "upcomingLayer"))
+        XCTAssertNotNil(try contents(of: nextRow, label: "supplementaryLayer"))
     }
 
     func testKaraokeKeepsGradientOnlyOnThePartialGlyphAndRestoresItAfterSeeking() throws {
@@ -613,6 +675,71 @@ final class FloatingLyricsWindowTests: XCTestCase {
         XCTAssertFalse(child.isVisible)
         XCTAssertTrue(button.window === panel)
         XCTAssertTrue(panel.ignoresMouseEvents)
+    }
+
+    func testLockedMinimalKeepsPlaybackControlsInteractive() throws {
+        _ = NSApplication.shared
+        let originalMode = AppPreferences.floatingLyricsMode
+        let originalLock = AppPreferences.floatingPositionLocked
+        defer {
+            AppPreferences.floatingLyricsMode = originalMode
+            AppPreferences.floatingPositionLocked = originalLock
+        }
+        AppPreferences.floatingLyricsMode = .minimal
+        AppPreferences.floatingPositionLocked = true
+        let controller = FloatingLyricsController()
+        let fields = Mirror(reflecting: controller).children
+        let panel = try XCTUnwrap(fields.first { $0.label == "panel" }?.value as? NSPanel)
+        let controls = try XCTUnwrap(fields.first { $0.label == "controls" }?.value as? PlaybackControls)
+        let controlFields = Mirror(reflecting: controls).children
+        let playButton = try XCTUnwrap(controlFields.first { $0.label == "play" }?.value as? ActionButton)
+        let prevButton = try XCTUnwrap(controlFields.first { $0.label == "previous" }?.value as? ActionButton)
+        let nextButton = try XCTUnwrap(controlFields.first { $0.label == "next" }?.value as? ActionButton)
+
+        let track = TrackInfo(title: "Minimal Test", artist: "Artist", album: "Album", duration: 180, position: 10, state: .playing)
+        controller.apply(status: .noLyrics(track))
+        controller.setVisible(true, animated: false)
+        defer { controller.setVisible(false, animated: false) }
+
+        let child = try XCTUnwrap(controls.window)
+        XCTAssertTrue(child.parent === panel)
+        XCTAssertTrue(panel.ignoresMouseEvents)
+        XCTAssertFalse(child.ignoresMouseEvents)
+        XCTAssertEqual(child.frame.size, NSSize(width: controls.width, height: 34))
+
+        var togglePresses = 0
+        var prevPresses = 0
+        var nextPresses = 0
+        controller.onTogglePlayPause = { togglePresses += 1 }
+        controller.onPreviousTrack = { prevPresses += 1 }
+        controller.onNextTrack = { nextPresses += 1 }
+
+        playButton.performClick(nil)
+        XCTAssertEqual(togglePresses, 1)
+
+        prevButton.performClick(nil)
+        XCTAssertEqual(prevPresses, 1)
+
+        nextButton.performClick(nil)
+        XCTAssertEqual(nextPresses, 1)
+
+        AppPreferences.floatingPositionLocked = false
+        controller.applyPositionLock()
+        XCTAssertFalse(child.isVisible)
+        XCTAssertTrue(controls.window === panel)
+        XCTAssertFalse(panel.ignoresMouseEvents)
+
+        AppPreferences.floatingPositionLocked = true
+        controller.applyPositionLock()
+        XCTAssertTrue(child.isVisible)
+        XCTAssertTrue(controls.window === child)
+        XCTAssertTrue(panel.ignoresMouseEvents)
+        XCTAssertFalse(child.ignoresMouseEvents)
+
+        AppPreferences.floatingLyricsMode = .vinyl
+        controller.applyPreferences()
+        XCTAssertFalse(child.isVisible)
+        XCTAssertTrue(controls.window === panel)
     }
 
     func testAlwaysOnTopSettingChangesBothTheFloatingWindowAndItsLockedControls() throws {

@@ -95,6 +95,10 @@ final class StatusBarPlaybackTests: XCTestCase {
         let controller = MenuBarController()
         let item = try XCTUnwrap(Mirror(reflecting: controller).children.first { $0.label == "statusItem" }?.value as? NSStatusItem)
         let button = try XCTUnwrap(item.button)
+        guard let window = button.window, window.isVisible,
+              window.occlusionState.contains(.visible) else {
+            throw XCTSkip("Lyric advancement intentionally pauses when the status item is occluded; requires a visible menu bar.")
+        }
         let track = TrackInfo(title: "Song", artist: "Artist", album: "", duration: 30, position: 2.85, state: .playing)
         let lyrics = LyricsDocument(lines: [LyricLine(time: 3, text: "First lyric")], plainText: nil,
                                     source: "test", isSynced: true, wordTiming: .none).addingGaps(duration: track.duration)
@@ -305,7 +309,7 @@ final class StatusBarPlaybackTests: XCTestCase {
         XCTAssertTrue(hasInk(in: (width / 4)..<(3 * width / 4)))
     }
 
-    func testNativeStatusItemsRoutePlaybackAndHideInIconMode() throws {
+    func testGroupedStatusItemRoutesPlaybackAndHidesInIconMode() throws {
         _ = NSApplication.shared
         let originalMode = AppPreferences.statusBarMode
         defer { AppPreferences.statusBarMode = originalMode }
@@ -314,15 +318,13 @@ final class StatusBarPlaybackTests: XCTestCase {
         let controller = MenuBarController()
         let fields = Mirror(reflecting: controller).children
         let lyrics = try XCTUnwrap(fields.first { $0.label == "statusItem" }?.value as? NSStatusItem)
-        let items = try ["previousStatusItem", "toggleStatusItem", "nextStatusItem"].map { name in
-            try XCTUnwrap(fields.first { $0.label == name }?.value as? NSStatusItem)
-        }
-        let buttons = try items.map { try XCTUnwrap($0.button) }
+        let item = try XCTUnwrap(fields.first { $0.label == "playbackStatusItem" }?.value as? NSStatusItem)
+        let button = try XCTUnwrap(item.button)
         let lyricsButton = try XCTUnwrap(lyrics.button)
-        XCTAssertTrue(items.allSatisfy(\.isVisible))
-        XCTAssertEqual(Set(items.map(\.autosaveName)).count, 3)
-        XCTAssertTrue(buttons.allSatisfy { $0.action != lyricsButton.action && $0.target === controller })
-        XCTAssertTrue(buttons.allSatisfy { !$0.isEnabled })
+        XCTAssertEqual(item.length, 78)
+        XCTAssertTrue(item.isVisible)
+        XCTAssertTrue(button.action != lyricsButton.action && button.target === controller)
+        XCTAssertTrue(button.isEnabled)
 
         var actions: [String] = []
         controller.onPreviousTrack = { actions.append("previous") }
@@ -332,22 +334,36 @@ final class StatusBarPlaybackTests: XCTestCase {
             title: "Test", artist: "", album: "", duration: 30, position: 2, state: .playing
         )))
 
-        XCTAssertEqual(buttons.map { $0.accessibilityLabel() }, ["上一首", "暂停", "下一首"])
-        buttons.forEach { $0.performClick(nil) }
+        XCTAssertTrue(button.isEnabled)
+        XCTAssertEqual(button.accessibilityLabel(), "播放控制")
+        XCTAssertEqual(item.button?.image?.size, NSSize(width: 78, height: 18))
+
+        func click(atX x: CGFloat, type: NSEvent.EventType = .leftMouseDown, upType: NSEvent.EventType = .leftMouseUp, flags: NSEvent.ModifierFlags = []) {
+            let winNum = button.window?.windowNumber ?? 0
+            let down = NSEvent.mouseEvent(with: type, location: NSPoint(x: x, y: 10), modifierFlags: flags, timestamp: 0, windowNumber: winNum, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+            let up = NSEvent.mouseEvent(with: upType, location: NSPoint(x: x, y: 10), modifierFlags: flags, timestamp: 0.1, windowNumber: winNum, context: nil, eventNumber: 1, clickCount: 1, pressure: 0)!
+            NSApplication.shared.postEvent(up, atStart: false)
+            button.mouseDown(with: down)
+        }
+
+        click(atX: 10)
+        click(atX: 39)
+        click(atX: 65)
         XCTAssertEqual(actions, ["previous", "toggle", "next"])
 
-        controller.apply(status: .noLyrics(TrackInfo(
-            title: "Test", artist: "", album: "", duration: 30, position: 2, state: .paused
-        )))
-        XCTAssertEqual(buttons[1].accessibilityLabel(), "播放")
+        let panel = try XCTUnwrap(fields.first { $0.label == "playerPanel" }?.value as? NSPanel)
+        defer { panel.orderOut(nil) }
+        click(atX: 10, type: .rightMouseDown, upType: .rightMouseUp)
+        XCTAssertTrue(panel.isVisible)
+        XCTAssertEqual(actions, ["previous", "toggle", "next"])
 
         AppPreferences.statusBarMode = .icon
         controller.reloadAppearance()
-        XCTAssertTrue(items.allSatisfy { !$0.isVisible })
+        XCTAssertFalse(item.isVisible)
         XCTAssertEqual(lyrics.length, NSStatusBar.system.thickness)
         AppPreferences.statusBarMode = .automatic
         controller.reloadAppearance()
-        XCTAssertTrue(items.allSatisfy(\.isVisible))
+        XCTAssertTrue(item.isVisible)
     }
 
     func testFloatingLyricsHandoffHidesTheStatusItemAndRestoresTheLatestLine() throws {
@@ -360,9 +376,7 @@ final class StatusBarPlaybackTests: XCTestCase {
         let fields = Mirror(reflecting: controller).children
         let statusItem = try XCTUnwrap(fields.first { $0.label == "statusItem" }?.value as? NSStatusItem)
         let view = try XCTUnwrap(fields.first { $0.label == "karaokeTitleView" }?.value as? NSView)
-        let playbackItems = try ["previousStatusItem", "toggleStatusItem", "nextStatusItem"].map { name in
-            try XCTUnwrap(fields.first { $0.label == name }?.value as? NSStatusItem)
-        }
+        let playbackItems = [try XCTUnwrap(fields.first { $0.label == "playbackStatusItem" }?.value as? NSStatusItem)]
         let lines = [LyricLine(time: 0, text: "First"), LyricLine(time: 5, text: "Second")]
         let lyrics = LyricsDocument(lines: lines, plainText: nil, source: "test", isSynced: true, wordTiming: .none)
         func track(at position: TimeInterval) -> TrackInfo {

@@ -4,11 +4,12 @@ import AppKit
 final class GlassSurface: NSView {
     let content = NSView()
     private var material: NSView?
+    private var usesReducedTransparency: Bool?
     private let corner: CGFloat
     private let clearGlass: Bool
     private let adjustableOpacity: Bool
     var backgroundOpacity: CGFloat = 1 {
-        didSet { updateMaterialOpacity() }
+        didSet { if backgroundOpacity != oldValue { updateMaterialOpacity() } }
     }
 
     init(cornerRadius: CGFloat = 24, clearGlass: Bool = false, adjustableOpacity: Bool = false) {
@@ -27,12 +28,18 @@ final class GlassSurface: NSView {
     deinit { NSWorkspace.shared.notificationCenter.removeObserver(self) }
 
     @objc private func rebuildMaterial() {
+        let reduceTransparency = NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
+        guard usesReducedTransparency != reduceTransparency else {
+            if reduceTransparency { updateOpaqueBackgroundColor() }
+            return
+        }
+        usesReducedTransparency = reduceTransparency
         content.removeFromSuperview()
         material?.removeFromSuperview()
         material = nil
         layer?.backgroundColor = nil
         layer?.masksToBounds = true
-        if NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency {
+        if reduceTransparency {
             updateOpaqueBackgroundColor()
             addSubview(content)
         } else {
@@ -85,8 +92,8 @@ final class GlassSurface: NSView {
 
     override func layout() {
         super.layout()
-        material?.frame = bounds
-        content.frame = bounds
+        if let material, material.frame != bounds { material.frame = bounds }
+        if content.frame != bounds { content.frame = bounds }
     }
 
     override func viewDidChangeEffectiveAppearance() {

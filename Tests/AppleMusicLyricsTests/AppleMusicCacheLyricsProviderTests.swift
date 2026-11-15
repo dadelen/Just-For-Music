@@ -484,6 +484,43 @@ final class AppleMusicCacheLyricsProviderTests: XCTestCase {
         XCTAssertEqual(LyricsLanguageDetector.songLanguage(for: document), .foreign)
     }
 
+    func testMisalignedAlternativeUsesTheEarliestEquidistantTimestamp() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let dataDirectory = root.appendingPathComponent("fsCachedData", isDirectory: true)
+        try FileManager.default.createDirectory(at: dataDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let primary = """
+        <tt><body><div>
+          <p begin="1.0" end="2.0">First</p>
+          <p begin="10.0" end="11.0">Second</p>
+          <p begin="10.0" end="11.0">Second duplicate</p>
+          <p begin="20.0" end="21.0">Third</p>
+        </div></body></tt>
+        """
+        let alternative = """
+        <tt><body><div>
+          <p begin="10.0" end="11.0">Translated second</p>
+        </div></body></tt>
+        """
+        let response = try cachedResponse(
+            title: "Misaligned Song",
+            artist: "Misaligned Artist",
+            localizations: ["en-US": primary, "fr-Translation": alternative]
+        )
+        try response.write(to: dataDirectory.appendingPathComponent(UUID().uuidString))
+
+        let track = TrackInfo(title: "Misaligned Song", artist: "Misaligned Artist", album: "Test Album",
+                              duration: 180, position: 10, state: .playing)
+        let document = AppleMusicCacheLyricsProvider(
+            cacheDirectory: root,
+            preferredLanguages: ["en-US"]
+        ).lyrics(for: track)
+
+        XCTAssertEqual(document.lines.map(\.translation), [nil, "Translated second", nil, nil])
+    }
+
     private func cachedResponse(
         title: String,
         artist: String,

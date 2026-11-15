@@ -41,9 +41,9 @@ final class PlaybackMonitor {
         let completion: (Bool) -> Void
     }
 
-    private static let playingInterval: TimeInterval = 0.75
-    private static let idleInterval: TimeInterval = 1
-    private static let musicClosedInterval: TimeInterval = 2
+    private static let playingInterval: TimeInterval = 1.25
+    private static let idleInterval: TimeInterval = 3.0
+    private static let musicClosedInterval: TimeInterval = 4.0
     private static let helperName = "AppleMusicLyricsPlaybackHelper"
     private static let musicBundleIdentifier = "com.apple.Music"
 
