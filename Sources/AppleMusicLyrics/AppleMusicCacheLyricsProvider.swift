@@ -152,6 +152,7 @@ final class AppleMusicCacheLyricsProvider: @unchecked Sendable {
         }
         let enrichedLines = enrich(
             parsed.lines,
+            sourceLocale: selection.locale,
             with: selection.alternatives
         )
         let translatedCount = enrichedLines.filter { $0.translation != nil }.count
@@ -326,12 +327,18 @@ final class AppleMusicCacheLyricsProvider: @unchecked Sendable {
 
     private func enrich(
         _ primaryLines: [LyricLine],
+        sourceLocale: String?,
         with alternatives: [LocalizedTTMLAlternative]
     ) -> [LyricLine] {
         var translations: [Int: String] = [:]
         var translationLanguages: [Int: String] = [:]
         for (index, line) in primaryLines.enumerated() {
-            translations[index] = line.translation
+            guard let translation = line.translation,
+                  !LyricsLocaleMatcher.isRedundantTranslation(
+                    translation, of: line.text, sourceLocale: sourceLocale,
+                    translationLocale: line.translationLanguage
+                  ) else { continue }
+            translations[index] = translation
             translationLanguages[index] = line.translationLanguage
         }
         var transliterations: [Int: String] = [:]
@@ -359,6 +366,10 @@ final class AppleMusicCacheLyricsProvider: @unchecked Sendable {
                     transliterations[index, default: alternativeLine.text] = alternativeLine.text
                 } else if translations[index] == nil ||
                             (normalizedLocale.hasPrefix("zh") && translationLanguages[index]?.lowercased().hasPrefix("zh") != true) {
+                    guard !LyricsLocaleMatcher.isRedundantTranslation(
+                        alternativeLine.text, of: primaryLines[index].text, sourceLocale: sourceLocale,
+                        translationLocale: alternative.locale
+                    ) else { continue }
                     translations[index] = alternativeLine.text
                     translationLanguages[index] = alternative.locale
                 }
@@ -373,7 +384,9 @@ final class AppleMusicCacheLyricsProvider: @unchecked Sendable {
                 translation: translations[index],
                 transliteration: transliterations[index],
                 confirmedEnd: line.confirmedEnd,
-                translationLanguage: translationLanguages[index]
+                translationLanguage: translationLanguages[index],
+                vocalRole: line.vocalRole,
+                harmonies: line.harmonies
             )
         }
     }
@@ -633,6 +646,19 @@ private struct LocalizedTTMLSelection {
 private enum LyricsLocaleMatcher {
     private static let traditionalToSimplified = StringTransform("Traditional-Simplified")
     private static let simplifiedToTraditional = StringTransform("Simplified-Traditional")
+
+    static func isRedundantTranslation(_ translation: String, of original: String,
+                                       sourceLocale: String?, translationLocale: String?) -> Bool {
+        let originalText = original.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        let translatedText = translation.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        if originalText == translatedText { return true }
+        guard sourceLocale.map(LanguageTag.init)?.language == "zh",
+              translationLocale.map(LanguageTag.init)?.language == "zh",
+              let simplifiedOriginal = originalText.applyingTransform(traditionalToSimplified, reverse: false),
+              let simplifiedTranslation = translatedText.applyingTransform(traditionalToSimplified, reverse: false)
+        else { return false }
+        return simplifiedOriginal == simplifiedTranslation
+    }
 
     static func bestKey<S: Sequence>(
         in keys: S,

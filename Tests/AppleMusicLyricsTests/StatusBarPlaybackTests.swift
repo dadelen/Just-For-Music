@@ -412,6 +412,71 @@ final class StatusBarPlaybackTests: XCTestCase {
         XCTAssertTrue(view.isHidden)
         XCTAssertTrue(playbackItems.allSatisfy { !$0.isVisible })
     }
+
+    func testMonotonicAndOverlappingStatusKaraokePathsRenderProgressiveHighlights() throws {
+        _ = NSApplication.shared
+        let defaults = UserDefaults.standard
+        let keys = [AppPreferences.statusBarModeKey, "menuBarLyrics.activeColor", "menuBarLyrics.inactiveColor"]
+        let original = keys.map(defaults.object(forKey:))
+        defer { for (key, value) in zip(keys, original) { defaults.set(value, forKey: key) } }
+        AppPreferences.statusBarMode = .automatic
+        AppPreferences.menuBarLyricsActiveColor = NSColor(srgbRed: 1, green: 0, blue: 0, alpha: 1)
+        AppPreferences.menuBarLyricsInactiveColor = NSColor(srgbRed: 0, green: 0, blue: 1, alpha: 1)
+
+        let controller = MenuBarController()
+        let title = try XCTUnwrap(Mirror(reflecting: controller).children
+            .first { $0.label == "karaokeTitleView" }?.value as? NSView)
+        let width = Int(title.bounds.width * 2)
+        let height = Int(title.bounds.height * 2)
+        let bitmap = try XCTUnwrap(CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        bitmap.translateBy(x: 0, y: CGFloat(height))
+        bitmap.scaleBy(x: 2, y: -2)
+        let pixels = try XCTUnwrap(bitmap.data).assumingMemoryBound(to: UInt8.self)
+
+        func redInkCount(lyrics: LyricsDocument, at position: TimeInterval) -> Int {
+            let track = TrackInfo(title: "Test", artist: "", album: "", duration: 30, position: position, state: .paused)
+            controller.updateKaraokeProgress(track: track, lyrics: lyrics)
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(cgContext: bitmap, flipped: true)
+            title.draw(title.bounds)
+            NSGraphicsContext.restoreGraphicsState()
+            var count = 0
+            for y in 0..<height {
+                for x in 0..<width {
+                    let i = y * bitmap.bytesPerRow + x * 4
+                    if Int(pixels[i]) > Int(pixels[i + 2]) + 20 { count += 1 }
+                }
+            }
+            return count
+        }
+
+        let monotonic = LyricsDocument(lines: [
+            LyricLine(time: 0, text: "Hello World", words: [
+                LyricWord(text: "Hello ", start: 0, end: 2),
+                LyricWord(text: "World", start: 2, end: 4)
+            ])
+        ], plainText: nil, source: "test", isSynced: true, wordTiming: .exact)
+        let monoMid = redInkCount(lyrics: monotonic, at: 1.5)
+        XCTAssertEqual(Mirror(reflecting: title).children.first { $0.label == "isMonotonicLTR" }?.value as? Bool, true)
+        let monoEnd = redInkCount(lyrics: monotonic, at: 4.5)
+        XCTAssertGreaterThan(monoMid, 0)
+        XCTAssertGreaterThan(monoEnd, monoMid)
+
+        let overlapping = LyricsDocument(lines: [
+            LyricLine(time: 0, text: "Overlap Test", words: [
+                LyricWord(text: "Overlap ", start: 0, end: 3),
+                LyricWord(text: "Test", start: 1, end: 2)
+            ])
+        ], plainText: nil, source: "test", isSynced: true, wordTiming: .exact)
+        let overlapMid = redInkCount(lyrics: overlapping, at: 1.5)
+        let overlapEnd = redInkCount(lyrics: overlapping, at: 4.0)
+        XCTAssertEqual(Mirror(reflecting: title).children.first { $0.label == "isMonotonicLTR" }?.value as? Bool, false)
+        XCTAssertGreaterThan(overlapMid, 0)
+        XCTAssertGreaterThan(overlapEnd, overlapMid)
+    }
 }
 
 private final class SimulatedProgressTrackingCell: NSSliderCell {

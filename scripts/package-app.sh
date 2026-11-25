@@ -14,8 +14,8 @@ RESOURCES="$CONTENTS/Resources"
 HELPERS="$CONTENTS/Helpers"
 ENTITLEMENTS="$ROOT/AppleMusicLyrics.entitlements"
 APP_ICON="$ROOT/Resources/AppIcon.icns"
-VERSION="${VERSION:-1.0.5}"
-BUILD_NUMBER="${BUILD_NUMBER:-14}"
+VERSION="${VERSION:-1.1.0}"
+BUILD_NUMBER="${BUILD_NUMBER:-25}"
 CODESIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
 BUNDLE_IDENTIFIER="${BUNDLE_IDENTIFIER:-io.github.dadelen.just-for-music}"
 UPDATE_REPOSITORY="${UPDATE_REPOSITORY-dadelen/Just-For-Music}"
@@ -105,6 +105,8 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
   <key>LSMinimumSystemVersion</key>
   <string>13.0</string>
   <key>LSUIElement</key>
+  <true/>
+  <key>JFMSupportsInstanceHandoff</key>
   <true/>
   <key>NSAppleEventsUsageDescription</key>
   <string>Just-For-Music reads the current track and controls playback in the Music app.</string>

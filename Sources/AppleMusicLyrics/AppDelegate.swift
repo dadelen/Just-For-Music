@@ -538,10 +538,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         lyricsTask = Task { [weak self, lyricsService] in
             var document = await lyricsService.lyrics(for: track, bypassMemory: bypassMemory)
             if showLoading, document.lines.isEmpty {
-                // Dense polling phase: poll every 250ms for up to ~2.5s while Music.app publishes the response.
-                let maxDenseAttempts = 10
-                for _ in 0..<maxDenseAttempts {
-                    do { try await Task.sleep(nanoseconds: 250_000_000) }
+                // Pick up responses written shortly after the track changes, then back off.
+                let retryIntervalsMS: [UInt64] = [250, 350, 500, 650, 750]
+                for interval in retryIntervalsMS {
+                    do { try await Task.sleep(nanoseconds: interval * 1_000_000) }
                     catch { return }
                     guard !Task.isCancelled, self?.lyricsGeneration == generation else { return }
                     document = await lyricsService.lyrics(for: track, recentIndexOnly: true)

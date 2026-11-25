@@ -37,8 +37,19 @@ enum AppleTTMLParser {
         private var translationBlock: (depth: Int, language: String?)?
         private var translationEntry: (depth: Int, key: String, text: String)?
         private var translations: [String: (text: String, language: String?)] = [:]
-        private var line: LineBuilder?
-        private var spans: [SpanBuilder] = []
+        private static let metadataNamespace = "http://www.w3.org/ns/ttml#metadata"
+        private var namespaceBindings: [String: [String]] = [:]
+        private var singerIDs: [String] = []
+        private var groupIDs: Set<String> = []
+        private var vocals: [LineBuilder] = []
+
+        func parser(_ parser: XMLParser, didStartMappingPrefix prefix: String, toURI namespaceURI: String) {
+            namespaceBindings[prefix, default: []].append(namespaceURI)
+        }
+
+        func parser(_ parser: XMLParser, didEndMappingPrefix prefix: String) {
+            _ = namespaceBindings[prefix]?.popLast()
+        }
 
         func parser(
             _ parser: XMLParser,
@@ -54,7 +65,13 @@ enum AppleTTMLParser {
                 return
             }
             guard bodyDepth != nil else {
-                if name == "iTunesMetadata" {
+                if name == "agent", namespaceURI == Self.metadataNamespace, let id = attributeDict["xml:id"] {
+                    if attributeDict["type"] == "group" {
+                        groupIDs.insert(id)
+                    } else if !singerIDs.contains(id) {
+                        singerIDs.append(id)
+                    }
+                } else if name == "iTunesMetadata" {
                     metadataDepth = depth
                 } else if metadataDepth != nil, name == "translation",
                           attributeDict["type"] == nil || attributeDict["type"] == "subtitle" {
@@ -66,23 +83,26 @@ enum AppleTTMLParser {
             }
 
             if name == "p" {
-                line = LineBuilder(
+                let singer = singerRole(for: attributeDict)
+                vocals = [LineBuilder(
+                    depth: depth,
                     start: time(attributeDict["begin"]),
                     end: time(attributeDict["end"]),
-                    key: attributeDict["itunes:key"] ?? attributeDict.first { $0.key.hasSuffix(":key") }?.value
-                )
-                spans.removeAll(keepingCapacity: true)
-            } else if name == "span", line != nil, let start = time(attributeDict["begin"]) {
-                spans.append(
-                    SpanBuilder(
-                        depth: depth,
-                        text: "",
-                        start: start,
-                        end: time(attributeDict["end"])
+                    key: attributeDict["itunes:key"] ?? attributeDict.first { $0.key.hasSuffix(":key") }?.value,
+                    role: isHarmony(attributeDict) ? singer.harmonyRole : singer
+                )]
+            } else if name == "span", !vocals.isEmpty {
+                if vocals.count == 1, isHarmony(attributeDict) {
+                    let role = vocals[0].role.harmonyRole
+                    vocals.append(LineBuilder(depth: depth, start: time(attributeDict["begin"]),
+                                              end: time(attributeDict["end"]), key: nil, role: role))
+                } else if let start = time(attributeDict["begin"]) {
+                    vocals[vocals.count - 1].spans.append(
+                        SpanBuilder(depth: depth, text: "", start: start, end: time(attributeDict["end"]))
                     )
-                )
-            } else if name == "br", line != nil {
-                appendRaw("\n")
+                }
+            } else if name == "br" {
+                appendText("\n")
             }
         }
 
@@ -106,12 +126,19 @@ enum AppleTTMLParser {
                 translationBlock = nil
             } else if metadataDepth == depth {
                 metadataDepth = nil
-            } else if name == "span", spans.last?.depth == depth, let span = spans.popLast() {
-                flush(span: span)
-            } else if name == "p", let line {
+            } else if name == "span", !vocals.isEmpty {
+                let index = vocals.count - 1
+                if index > 0, vocals[index].depth == depth, let harmony = vocals.popLast() {
+                    let words = finishedWords(for: harmony, fallbackStart: vocals[0].start, fallbackEnd: vocals[0].end)
+                    if let first = words.first {
+                        vocals[0].harmonies.append(LyricHarmony(time: harmony.start ?? first.start, words: lyricWords(words)))
+                    }
+                } else if vocals[index].spans.last?.depth == depth, let span = vocals[index].spans.popLast() {
+                    flush(span: span, into: index)
+                }
+            } else if name == "p", let line = vocals.first {
                 finish(line: line)
-                self.line = nil
-                spans.removeAll(keepingCapacity: true)
+                vocals.removeAll(keepingCapacity: true)
             } else if name == "body", bodyDepth == depth {
                 bodyDepth = nil
             }
@@ -123,74 +150,110 @@ enum AppleTTMLParser {
                 translationEntry?.text += string
                 return
             }
-            guard line != nil else { return }
-            if !spans.isEmpty {
-                spans[spans.count - 1].text += string
+            appendText(string)
+        }
+
+        private func appendText(_ text: String) {
+            guard !vocals.isEmpty else { return }
+            let index = vocals.count - 1
+            if let span = vocals[index].spans.indices.last {
+                vocals[index].spans[span].text += text
             } else {
-                appendRaw(string)
+                vocals[index].pendingText += text
             }
         }
 
-        private func appendRaw(_ text: String) {
-            line?.pendingText += text
-        }
-
-        private func flush(span: SpanBuilder) {
-            guard var line else { return }
+        private func flush(span: SpanBuilder, into index: Int) {
             let rawText = normalizedWhitespace(span.text)
             guard !rawText.isEmpty else { return }
 
-            let text = normalizedWhitespace(line.pendingText) + rawText
-            line.pendingText = ""
-            line.words.append(
+            let text = normalizedWhitespace(vocals[index].pendingText) + rawText
+            let end = vocals[index].end ?? vocals.first?.end
+            vocals[index].pendingText = ""
+            vocals[index].words.append(
                 MutableWord(
                     text: text,
                     start: span.start,
-                    end: max(span.end ?? line.end ?? span.start + 0.1, span.start + 0.01),
+                    end: max(span.end ?? end ?? span.start + 0.1, span.start + 0.01),
                     explicitEnd: span.end
                 )
             )
-            self.line = line
             hasTimedSpan = true
         }
 
-        private func finish(line original: LineBuilder) {
-            var line = original
-            if line.words.isEmpty {
+        private func finishedWords(for line: LineBuilder, fallbackStart: TimeInterval? = nil,
+                                   fallbackEnd: TimeInterval? = nil) -> [MutableWord] {
+            var words = line.words
+            if words.isEmpty {
                 let text = normalizedWhitespace(line.pendingText)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !text.isEmpty else { return }
-                let start = line.start ?? 0
-                line.words = [
-                    MutableWord(
-                        text: text,
-                        start: start,
-                        end: max(line.end ?? start + 0.2, start + 0.01)
-                    )
-                ]
+                guard !text.isEmpty else { return [] }
+                let start = line.start ?? fallbackStart ?? 0
+                words = [MutableWord(text: text, start: start,
+                                     end: max(line.end ?? fallbackEnd ?? start + 0.2, start + 0.01))]
             } else if !line.pendingText.isEmpty {
-                line.words[line.words.count - 1].text += normalizedWhitespace(line.pendingText)
+                words[words.count - 1].text += normalizedWhitespace(line.pendingText)
             }
+            trimEdges(of: &words)
+            return words
+        }
 
-            trimEdges(of: &line.words)
-            guard !line.words.isEmpty else { return }
-            let text = line.words.map(\.text).joined()
-            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-            let start = line.start ?? line.words[0].start
+        private func finish(line: LineBuilder) {
+            var words = finishedWords(for: line)
+            var role = line.role
+            var harmonies = line.harmonies
             let translation = line.key.flatMap { translations[$0] }
-            lines.append(
-                LyricLine(
-                    time: start,
-                    text: text,
-                    words: line.words.map {
-                        LyricWord(text: $0.text, start: $0.start, end: $0.end)
-                    },
-                    translation: translation?.text,
-                    confirmedEnd: line.end ?? (line.words.allSatisfy { $0.explicitEnd != nil }
-                        ? line.words.compactMap(\.explicitEnd).max() : nil),
-                    translationLanguage: translation?.language
-                )
-            )
+            guard let first = words.first else {
+                // Some paragraphs consist entirely of an explicit background span.
+                for (index, harmony) in harmonies.enumerated() {
+                    lines.append(LyricLine(time: harmony.time, text: harmony.text, words: harmony.words,
+                                           translation: index == 0 ? translation?.text : nil,
+                                           confirmedEnd: index == harmonies.count - 1 ? line.end : nil,
+                                           translationLanguage: index == 0 ? translation?.language : nil,
+                                           vocalRole: role.isHarmony ? role : role.harmonyRole))
+                }
+                return
+            }
+            let confirmedEnd = line.end ?? (words.allSatisfy { $0.explicitEnd != nil }
+                ? words.compactMap(\.explicitEnd).max() : nil)
+            if harmonies.isEmpty, !role.isHarmony, let split = trailingHarmony(in: words) {
+                if split.lead.isEmpty {
+                    role = role.harmonyRole
+                } else if let start = split.harmony.first?.start {
+                    words = split.lead
+                    harmonies = [LyricHarmony(time: start, words: lyricWords(split.harmony))]
+                }
+            }
+            lines.append(LyricLine(time: line.start ?? first.start, text: words.map(\.text).joined(),
+                                   words: lyricWords(words), translation: translation?.text,
+                                   confirmedEnd: confirmedEnd, translationLanguage: translation?.language,
+                                   vocalRole: role, harmonies: harmonies))
+        }
+
+        private func lyricWords(_ words: [MutableWord]) -> [LyricWord] {
+            words.map { LyricWord(text: $0.text, start: $0.start, end: $0.end) }
+        }
+
+        private func metadataAttribute(_ name: String, in attributes: [String: String]) -> String? {
+            for (prefix, bindings) in namespaceBindings where bindings.last == Self.metadataNamespace {
+                if let value = attributes["\(prefix):\(name)"] { return value }
+            }
+            return nil
+        }
+
+        private func isHarmony(_ attributes: [String: String]) -> Bool {
+            metadataAttribute("role", in: attributes)?.split(whereSeparator: \.isWhitespace).contains("x-bg") == true
+        }
+
+        private func singerRole(for attributes: [String: String]) -> LyricVocalRole {
+            guard let references = metadataAttribute("agent", in: attributes)?.split(whereSeparator: \.isWhitespace),
+                  references.count == 1 else { return .lead }
+            let id = String(references[0])
+            guard !groupIDs.contains(id) else { return .lead }
+            if id == "v1" { return .lead }
+            if id == "v2" { return .partner }
+            if !singerIDs.contains(id) { singerIDs.append(id) }
+            return (singerIDs.firstIndex(of: id) ?? 0).isMultiple(of: 2) ? .lead : .partner
         }
 
         private func localName(_ elementName: String, qualifiedName: String?) -> String {
@@ -237,27 +300,85 @@ enum AppleTTMLParser {
         return result
     }
 
+    private static func trailingHarmony(in words: [MutableWord]) -> (lead: [MutableWord], harmony: [MutableWord])? {
+        guard let last = words.last?.text.last, last == ")" || last == "）" else { return nil }
+        let text = words.map(\.text).joined()
+        let closing: [Character: Character] = [")": "(", "）": "（"]
+        var expected: [Character] = []
+        var boundary: String.Index?
+        for index in text.indices.reversed() {
+            let character = text[index]
+            if let opener = closing[character] {
+                expected.append(opener)
+            } else if let opener = expected.last {
+                if character == "(" || character == "（" {
+                    guard character == opener else { break }
+                    expected.removeLast()
+                    if expected.isEmpty { boundary = index }
+                }
+            } else if !character.isWhitespace {
+                break
+            }
+        }
+        guard let boundary, text[boundary...].contains(where: \.isLetter) else { return nil }
+        let offset = boundary.utf16Offset(in: text)
+        var lead: [MutableWord] = []
+        var harmony: [MutableWord] = []
+        var remaining = offset
+        for word in words {
+            let length = word.text.utf16.count
+            if remaining <= 0 {
+                harmony.append(word)
+            } else if remaining >= length {
+                lead.append(word)
+            } else {
+                let boundary = String.Index(utf16Offset: remaining, in: word.text)
+                let prefix = word.text[..<boundary]
+                let suffix = word.text[boundary...]
+                let sungLength = prefix.trimmingCharacters(in: .whitespacesAndNewlines).count
+                let fraction = Double(sungLength) / Double(sungLength + suffix.count)
+                let time = word.start + (word.end - word.start) * fraction
+                lead.append(MutableWord(text: String(prefix), start: word.start, end: time))
+                harmony.append(MutableWord(text: String(suffix), start: time, end: word.end, explicitEnd: word.explicitEnd))
+            }
+            remaining -= length
+        }
+        trimEdges(of: &lead)
+        trimEdges(of: &harmony)
+        return (lead, harmony)
+    }
+
     private static func trimEdges(of words: inout [MutableWord]) {
         guard !words.isEmpty else { return }
-        words[0].text = words[0].text.replacingOccurrences(
-            of: #"^\s+"#,
-            with: "",
-            options: .regularExpression
-        )
-        words[words.count - 1].text = words[words.count - 1].text.replacingOccurrences(
-            of: #"\s+$"#,
-            with: "",
-            options: .regularExpression
-        )
+        if let firstNonSpace = words[0].text.firstIndex(where: { !$0.isWhitespace }) {
+            if firstNonSpace > words[0].text.startIndex {
+                words[0].text = String(words[0].text[firstNonSpace...])
+            }
+        } else {
+            words[0].text = ""
+        }
+        let lastIndex = words.count - 1
+        if let lastNonSpace = words[lastIndex].text.lastIndex(where: { !$0.isWhitespace }) {
+            let next = words[lastIndex].text.index(after: lastNonSpace)
+            if next < words[lastIndex].text.endIndex {
+                words[lastIndex].text = String(words[lastIndex].text[..<next])
+            }
+        } else {
+            words[lastIndex].text = ""
+        }
         words.removeAll { $0.text.isEmpty }
     }
 
     private struct LineBuilder {
+        let depth: Int
         let start: TimeInterval?
         let end: TimeInterval?
         let key: String?
+        let role: LyricVocalRole
         var pendingText = ""
         var words: [MutableWord] = []
+        var spans: [SpanBuilder] = []
+        var harmonies: [LyricHarmony] = []
     }
 
     private struct SpanBuilder {

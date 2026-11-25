@@ -230,7 +230,7 @@ private struct SettingsView: View {
             Section("桌面歌词显示") {
                 Toggle("显示中文译文", isOn: $translation)
                 Toggle("显示音译", isOn: $transliteration)
-                Text("优先显示 Apple Music 缓存中的中文译文。")
+                Text("优先显示 Apple Music 缓存中的中文译文。关闭自动翻译后，仍可显示已有译文。")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("自动翻译") {

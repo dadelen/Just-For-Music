@@ -20,6 +20,11 @@ final class PlaybackControls: NSView {
         self.buttonWidth = buttonWidth
         self.grouped = grouped
         super.init(frame: .zero)
+        if grouped {
+            wantsLayer = true
+            layer?.actions = ["backgroundColor": NSNull(), "cornerRadius": NSNull()]
+            updateBackgroundColor()
+        }
         previous.setSymbol("backward.fill", label: "上一首")
         play.setSymbol("play.fill", label: "播放")
         next.setSymbol("forward.fill", label: "下一首")
@@ -33,16 +38,23 @@ final class PlaybackControls: NSView {
 
     override func layout() {
         super.layout()
+        if grouped {
+            layer?.cornerRadius = bounds.height / 2
+        }
         for (index, button) in buttons.enumerated() {
             button.frame = NSRect(x: CGFloat(index) * buttonWidth, y: 0, width: buttonWidth, height: bounds.height)
         }
     }
 
-    override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect)
-        guard grouped else { return }
-        NSColor.labelColor.withAlphaComponent(0.08).setFill()
-        NSBezierPath(roundedRect: bounds, xRadius: bounds.height / 2, yRadius: bounds.height / 2).fill()
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        if grouped { updateBackgroundColor() }
+    }
+
+    private func updateBackgroundColor() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.08).cgColor
+        }
     }
 
     func update(_ track: TrackInfo?) {

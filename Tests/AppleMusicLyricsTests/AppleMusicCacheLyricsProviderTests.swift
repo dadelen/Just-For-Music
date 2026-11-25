@@ -367,6 +367,43 @@ final class AppleMusicCacheLyricsProviderTests: XCTestCase {
         XCTAssertEqual(LyricsLanguageDetector.groups(for: document).flatMap { $0.lines.keys }.sorted(), [1])
     }
 
+    func testOmitsCachedChineseSubtitlesThatRepeatTheOriginal() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let dataDirectory = root.appendingPathComponent("fsCachedData")
+        try FileManager.default.createDirectory(at: dataDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let original = """
+        <tt xml:lang="zh-Hant" xmlns:itunes="http://music.apple.com/lyric-ttml-internal">
+          <head><metadata><itunes:iTunesMetadata>
+            <translation type="subtitle" xml:lang="zh-Hans">
+              <text for="L1">保持冷静 now</text>
+              <text for="L2">请耐心等待</text>
+              <text for="L3">思路不清</text>
+            </translation>
+          </itunes:iTunesMetadata></metadata></head>
+          <body><div>
+            <p begin="1s" end="2s" itunes:key="L1"><span begin="1s" end="2s">保持冷靜 now</span></p>
+            <p begin="3s" end="4s" itunes:key="L2">請耐心等待</p>
+            <p begin="5s" end="6s" itunes:key="L3">腦袋打結</p>
+            <p begin="7s" end="8s" itunes:key="L4">話到嘴邊</p>
+          </div></body>
+        </tt>
+        """
+        let response = try cachedResponse(title: "Chinese Song", artist: "Subtitle Artist", localizations: [
+            "zh-Hant": original,
+            "zh-Hans-Translation": ttmlLine("话到嘴边", begin: 7, end: 8)
+        ])
+        try response.write(to: dataDirectory.appendingPathComponent(UUID().uuidString))
+
+        let track = TrackInfo(title: "Chinese Song", artist: "Subtitle Artist", album: "Test Album",
+                              duration: 180, position: 1.5, state: .playing)
+        let document = AppleMusicCacheLyricsProvider(cacheDirectory: root, preferredLanguages: ["zh-Hant"]).lyrics(for: track)
+        XCTAssertEqual(document.lines.map(\.text), ["保持冷靜 now", "請耐心等待", "腦袋打結", "話到嘴邊"])
+        XCTAssertEqual(document.lines.map(\.translation), [nil, nil, "思路不清", nil])
+        XCTAssertEqual(document.lines.map(\.translationLanguage), [nil, nil, "zh-Hans", nil])
+    }
+
     func testPrefersSimplifiedChineseLocalizationForHansLocale() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

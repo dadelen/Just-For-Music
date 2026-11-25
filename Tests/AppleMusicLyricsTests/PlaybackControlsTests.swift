@@ -4,6 +4,22 @@ import XCTest
 
 @MainActor
 final class PlaybackControlsTests: XCTestCase {
+    func testGroupedCapsuleFollowsAppearanceAndHeight() throws {
+        _ = NSApplication.shared
+        let controls = PlaybackControls(buttonWidth: 36, grouped: true)
+        let layer = try XCTUnwrap(controls.layer)
+        for (appearance, height) in [(NSAppearance.Name.aqua, 24.0), (.darkAqua, 32.0)] {
+            controls.appearance = try XCTUnwrap(NSAppearance(named: appearance))
+            controls.frame.size = CGSize(width: controls.width, height: height)
+            controls.layout()
+            let color = try XCTUnwrap(layer.backgroundColor)
+            controls.effectiveAppearance.performAsCurrentDrawingAppearance {
+                XCTAssertEqual(color, NSColor.labelColor.withAlphaComponent(0.08).cgColor)
+            }
+            XCTAssertEqual(layer.cornerRadius, height / 2)
+        }
+    }
+
     func testNeedleSettlesBeforeSendingPauseOrPlay() async {
         for (state, movement, command) in [(PlayerState.playing, "lift", "pause"), (.paused, "lower", "play")] {
             let song = track("Song", state: state)
@@ -126,6 +142,80 @@ final class PlaybackControlsTests: XCTestCase {
             restarted.fulfill()
         }
         await fulfillment(of: [restarted], timeout: 3)
+    }
+
+    func testMusicClosedStopsPollingAndScreenWakeResumesSampling() async throws {
+        let url = try makeHelper(
+            #"""
+            IFS= read -r request && [ "$request" = sample ] || exit 1
+            printf '%s\n' '{"kind":"musicNotRunning"}'
+            IFS= read -r request && [ "$request" = sample ] || exit 2
+            printf '%s\n' '{"kind":"track","title":"Song","artist":"","album":"","duration":30,"position":1,"state":"playing"}'
+            IFS= read -r request
+            """#
+        )
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let monitor = PlaybackMonitor(helperURL: url, isMusicRunning: { false })
+        defer { monitor.stop() }
+        let closed = expectation(description: "Music is closed")
+        let resumed = expectation(description: "sampling resumed")
+        monitor.onUpdate = { update in
+            switch update {
+            case .musicNotRunning: closed.fulfill()
+            case .track: resumed.fulfill()
+            default: break
+            }
+        }
+
+        monitor.start()
+        await fulfillment(of: [closed], timeout: 3)
+        XCTAssertNil(Mirror(reflecting: monitor).descendant("timer") as? Timer)
+
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.screensDidWakeNotification, object: nil)
+        await fulfillment(of: [resumed], timeout: 3)
+        XCTAssertEqual((Mirror(reflecting: monitor).descendant("timer") as? Timer)?.timeInterval, 1.25)
+    }
+
+    func testScreenSleepPausesSamplingButAllowsExplicitControls() async throws {
+        let url = try makeHelper(
+            #"""
+            while IFS= read -r request; do
+                printf '%s\n' '{"kind":"track","title":"Song","artist":"","album":"","duration":30,"position":1,"state":"playing","controlErrors":[null]}'
+            done
+            """#
+        )
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let monitor = PlaybackMonitor(helperURL: url)
+        defer { monitor.stop() }
+        let workspace = NSWorkspace.shared.notificationCenter
+        let initial = expectation(description: "Initial sample")
+        monitor.onUpdate = { _ in initial.fulfill() }
+        monitor.start()
+        await fulfillment(of: [initial], timeout: 3)
+        XCTAssertNotNil(Mirror(reflecting: monitor).descendant("timer") as? Timer)
+
+        workspace.post(name: NSWorkspace.screensDidSleepNotification, object: nil)
+        XCTAssertNil(Mirror(reflecting: monitor).descendant("timer") as? Timer)
+        let backgroundSample = expectation(description: "No automatic sample while asleep")
+        backgroundSample.isInverted = true
+        monitor.onUpdate = { _ in backgroundSample.fulfill() }
+        monitor.sampleNow()
+        await fulfillment(of: [backgroundSample], timeout: 0.15)
+
+        let command = expectation(description: "Explicit control while asleep")
+        monitor.onUpdate = nil
+        monitor.performControl(["next"]) { succeeded in
+            XCTAssertTrue(succeeded)
+            command.fulfill()
+        }
+        await fulfillment(of: [command], timeout: 3)
+        XCTAssertNil(Mirror(reflecting: monitor).descendant("timer") as? Timer)
+
+        let resumed = expectation(description: "Wake resumes sampling")
+        monitor.onUpdate = { _ in resumed.fulfill() }
+        workspace.post(name: NSWorkspace.screensDidWakeNotification, object: nil)
+        await fulfillment(of: [resumed], timeout: 3)
+        XCTAssertEqual((Mirror(reflecting: monitor).descendant("timer") as? Timer)?.timeInterval, 1.25)
     }
 
     private func makeHelper(_ source: String) throws -> URL {

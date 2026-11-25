@@ -11,13 +11,58 @@ enum AppIdentity {
 
 @main
 enum AppleMusicLyricsApp {
+    private static let handoffKey = "JFMSupportsInstanceHandoff"
+
+    @MainActor
     static func main() {
         let app = NSApplication.shared
+        app.setActivationPolicy(.accessory)
+        guard takeOverFromOlderCopies() else { return }
+
+        // LSUIElement apps are visible through runningApplications, without
+        // posting NSWorkspace did-launch notifications.
+        let observer = NSWorkspace.shared.observe(\.runningApplications, options: [.initial, .new]) { workspace, change in
+            for launched in change.newValue ?? workspace.runningApplications where isOtherCopy(launched) {
+                guard let bundleURL = launched.bundleURL,
+                      Bundle(url: bundleURL)?.object(forInfoDictionaryKey: handoffKey) as? Bool != true else { continue }
+                launched.terminate()
+            }
+        }
+        defer { observer.invalidate() }
+
         let delegate = AppDelegate()
         app.delegate = delegate
-        app.setActivationPolicy(.accessory)
         app.mainMenu = makeMainMenu()
         app.run()
+    }
+
+    private static func takeOverFromOlderCopies() -> Bool {
+        guard let identifier = Bundle.main.bundleIdentifier else { return true }
+        let current = NSRunningApplication.current
+        let others = NSRunningApplication.runningApplications(withBundleIdentifier: identifier).filter(isOtherCopy)
+        guard !others.isEmpty else { return true }
+        guard !others.contains(where: { launchedLater($0, than: current) }) else { return false }
+
+        for app in others { app.terminate() }
+        let deadline = Date().addingTimeInterval(3)
+        while others.contains(where: { !$0.isTerminated }) && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+        return others.allSatisfy(\.isTerminated)
+    }
+
+    private static func isOtherCopy(_ app: NSRunningApplication) -> Bool {
+        guard let identifier = Bundle.main.bundleIdentifier else { return false }
+        return app.bundleIdentifier == identifier && !app.isTerminated
+            && app.processIdentifier != ProcessInfo.processInfo.processIdentifier
+            && app.executableURL?.lastPathComponent == AppIdentity.name
+    }
+
+    private static func launchedLater(_ app: NSRunningApplication, than other: NSRunningApplication) -> Bool {
+        if let date = app.launchDate, let otherDate = other.launchDate, date != otherDate {
+            return date > otherDate
+        }
+        return app.processIdentifier > other.processIdentifier
     }
 
     private static func makeMainMenu() -> NSMenu {

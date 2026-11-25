@@ -55,7 +55,26 @@ struct LyricWord: Equatable, Sendable {
     let end: TimeInterval
 }
 
+enum LyricVocalRole: Equatable, Sendable {
+    case lead
+    case partner
+    case leadHarmony
+    case partnerHarmony
+
+    var isHarmony: Bool { self == .leadHarmony || self == .partnerHarmony }
+    var isRightAligned: Bool { self == .partner || self == .leadHarmony }
+    var harmonyRole: Self { isRightAligned ? .partnerHarmony : .leadHarmony }
+}
+
+struct LyricHarmony: Equatable, Sendable {
+    let time: TimeInterval
+    let words: [LyricWord]
+
+    var text: String { words.map(\.text).joined() }
+}
+
 struct LyricLine: Equatable, Sendable, Identifiable {
+    let id: String
     let time: TimeInterval
     let text: String
     /// Per-unit timings for karaoke highlighting.
@@ -68,8 +87,8 @@ struct LyricLine: Equatable, Sendable, Identifiable {
     let translationLanguage: String?
     let isGap: Bool
     let isMachineTranslation: Bool
-
-    var id: String { "\(time)-\(text.hashValue)" }
+    let vocalRole: LyricVocalRole
+    let harmonies: [LyricHarmony]
 
     var hasPreferredOriginalTranslation: Bool {
         guard !isMachineTranslation,
@@ -86,8 +105,11 @@ struct LyricLine: Equatable, Sendable, Identifiable {
         confirmedEnd: TimeInterval? = nil,
         translationLanguage: String? = nil,
         isGap: Bool = false,
-        isMachineTranslation: Bool = false
+        isMachineTranslation: Bool = false,
+        vocalRole: LyricVocalRole = .lead,
+        harmonies: [LyricHarmony] = []
     ) {
+        self.id = "\(time)-\(text.hashValue)"
         self.time = time
         self.text = text
         self.words = words
@@ -97,10 +119,72 @@ struct LyricLine: Equatable, Sendable, Identifiable {
         self.translationLanguage = translationLanguage
         self.isGap = isGap
         self.isMachineTranslation = isMachineTranslation
+        self.vocalRole = vocalRole
+        self.harmonies = harmonies
+    }
+
+    static func == (lhs: LyricLine, rhs: LyricLine) -> Bool {
+        lhs.time == rhs.time
+            && lhs.text == rhs.text
+            && lhs.words == rhs.words
+            && lhs.translation == rhs.translation
+            && lhs.transliteration == rhs.transliteration
+            && lhs.confirmedEnd == rhs.confirmedEnd
+            && lhs.translationLanguage == rhs.translationLanguage
+            && lhs.isGap == rhs.isGap
+            && lhs.isMachineTranslation == rhs.isMachineTranslation
+            && lhs.vocalRole == rhs.vocalRole
+            && lhs.harmonies == rhs.harmonies
     }
 
     var endTime: TimeInterval {
         words.last?.end ?? time
+    }
+
+    fileprivate func hidingHarmonyBrackets() -> Self {
+        guard vocalRole.isHarmony else { return self }
+        let original = words.isEmpty ? text : words.map(\.text).joined()
+        let brackets = Self.harmonyBracketOffsets(in: original)
+        guard !brackets.isEmpty else { return self }
+
+        var offset = 0
+        func stripBrackets(from text: String) -> String {
+            var result = ""
+            for scalar in text.unicodeScalars {
+                if !brackets.contains(offset) { result.unicodeScalars.append(scalar) }
+                offset += 1
+            }
+            return result
+        }
+
+        let displayWords = words.compactMap { word -> LyricWord? in
+            let text = stripBrackets(from: word.text)
+            return text.isEmpty ? nil : LyricWord(text: text, start: word.start, end: word.end)
+        }
+        let displayText = words.isEmpty ? stripBrackets(from: text) : displayWords.map(\.text).joined()
+        return Self(time: time, text: displayText, words: displayWords, translation: translation,
+                    transliteration: transliteration, confirmedEnd: confirmedEnd,
+                    translationLanguage: translationLanguage, isGap: isGap,
+                    isMachineTranslation: isMachineTranslation, vocalRole: vocalRole, harmonies: harmonies)
+    }
+
+    private static func harmonyBracketOffsets(in text: String) -> Set<Int> {
+        var expectedClosers: [Unicode.Scalar] = []
+        var offsets = Set<Int>()
+        for (offset, scalar) in text.unicodeScalars.enumerated() {
+            switch scalar {
+            case "(", "（":
+                if expectedClosers.isEmpty { offsets.insert(offset) }
+                expectedClosers.append(scalar == "(" ? ")" : "）")
+            case ")", "）":
+                guard expectedClosers.popLast() == scalar else { return [] }
+                if expectedClosers.isEmpty { offsets.insert(offset) }
+            default:
+                // A wrapped harmony can consist of several parenthesized groups.
+                if expectedClosers.isEmpty, !CharacterSet.whitespacesAndNewlines.contains(scalar) { return [] }
+            }
+        }
+        return expectedClosers.isEmpty ? offsets : []
     }
 }
 
@@ -165,10 +249,6 @@ struct LyricsDocument: Equatable, Sendable {
         artworkURL: nil
     )
 
-    var hasKaraoke: Bool {
-        wordTiming != .none && lines.contains { !$0.words.isEmpty }
-    }
-
     func lineIndex(at position: TimeInterval) -> Int? {
         guard !lines.isEmpty else { return nil }
         var lo = 0
@@ -203,18 +283,41 @@ enum AppStatus: Equatable, Sendable {
 }
 
 extension LyricsDocument {
+    /// Keep separate vocal rows local to the floating canvas. Translations and
+    /// the menu-bar lyric still use the original paragraph sequence.
+    var floatingLines: [LyricLine] {
+        guard lines.contains(where: { $0.vocalRole.isHarmony || !$0.harmonies.isEmpty }) else { return lines }
+        var rows = lines.map { $0.hidingHarmonyBrackets() }
+        for line in lines {
+            for harmony in line.harmonies {
+                let row = LyricLine(time: harmony.time, text: harmony.text, words: harmony.words,
+                                    vocalRole: line.vocalRole.harmonyRole)
+                rows.append(row.hidingHarmonyBrackets())
+            }
+        }
+        if rows.count != lines.count {
+            rows.sort { first, second in
+                if first.time != second.time { return first.time < second.time }
+                return first.vocalRole.isHarmony && !second.vocalRole.isHarmony
+            }
+        }
+        return rows
+    }
+
     /// Builds presentation-only gap cues. Source timestamps remain untouched.
     func addingGaps(duration: TimeInterval, minimumGap: TimeInterval = 1.5) -> LyricsDocument {
         guard isSynced, !lines.isEmpty else { return self }
         var result: [LyricLine] = []
         var boundary: TimeInterval? = 0
         for line in lines {
-            if let start = boundary, line.time.isFinite, line.time - start >= minimumGap {
-                result.append(Self.gap(from: start, to: line.time))
+            let onset = min(line.time, line.harmonies.lazy.map(\.time).min() ?? line.time)
+            if let start = boundary, onset.isFinite, onset - start >= minimumGap {
+                result.append(Self.gap(from: start, to: onset))
             }
             result.append(line)
             if let end = line.confirmedEnd, end.isFinite, end > line.time {
-                boundary = max(boundary ?? line.time, end)
+                let harmonyEnd = line.harmonies.lazy.flatMap(\.words).map(\.end).max() ?? end
+                boundary = max(boundary ?? line.time, end, harmonyEnd)
             } else {
                 boundary = nil
             }

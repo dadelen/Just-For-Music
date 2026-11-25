@@ -2,6 +2,19 @@ import XCTest
 @testable import AppleMusicLyrics
 
 final class LyricsGapTests: XCTestCase {
+    func testHarmonyExtendsTheSungIntervalBeforeAndAfterTheLead() {
+        let harmony = LyricHarmony(time: 1, words: [.init(text: "(Echo)", start: 1, end: 7)])
+        let lines = [
+            LyricLine(time: 2, text: "Lead", confirmedEnd: 4, harmonies: [harmony]),
+            LyricLine(time: 8.5, text: "Next", confirmedEnd: 9)
+        ]
+        let lyrics = LyricsDocument(lines: lines, plainText: nil, source: "test",
+                                    isSynced: true, wordTiming: .exact)
+        let gaps = lyrics.addingGaps(duration: 10).lines.filter(\.isGap)
+        XCTAssertEqual(gaps.map(\.time), [7])
+        XCTAssertEqual(gaps.map(\.confirmedEnd), [8.5])
+    }
+
     private func document(_ xml: String) throws -> LyricsDocument {
         let parsed = try AppleTTMLParser.parse("<tt><body><div>\(xml)</div></body></tt>")
         return LyricsDocument(lines: parsed.lines, plainText: nil, source: "test", isSynced: true, wordTiming: parsed.wordTiming)

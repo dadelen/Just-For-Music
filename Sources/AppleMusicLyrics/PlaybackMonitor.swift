@@ -43,7 +43,6 @@ final class PlaybackMonitor {
 
     private static let playingInterval: TimeInterval = 1.25
     private static let idleInterval: TimeInterval = 3.0
-    private static let musicClosedInterval: TimeInterval = 4.0
     private static let helperName = "AppleMusicLyricsPlaybackHelper"
     private static let musicBundleIdentifier = "com.apple.Music"
 
@@ -61,6 +60,7 @@ final class PlaybackMonitor {
     }
 
     private let helperURL: URL?
+    private let isMusicRunning: () -> Bool
     private var timer: Timer?
     private var workspaceObservers: [NSObjectProtocol] = []
     private var musicObserver: NSObjectProtocol?
@@ -76,16 +76,22 @@ final class PlaybackMonitor {
     private var pendingCommand: PendingCommand?
     private var commandTimeout: DispatchWorkItem?
     private var isStopping = false
+    private var screensAwake = true
 
     var onUpdate: ((Update) -> Void)?
 
-    init(helperURL: URL? = PlaybackMonitor.helperExecutableURL) {
+    init(helperURL: URL? = PlaybackMonitor.helperExecutableURL, isMusicRunning: (() -> Bool)? = nil) {
         self.helperURL = helperURL
+        self.isMusicRunning = isMusicRunning ?? {
+            NSRunningApplication.runningApplications(withBundleIdentifier: Self.musicBundleIdentifier)
+                .contains { !$0.isTerminated }
+        }
     }
 
     func start() {
-        guard timer == nil else { return }
+        guard musicObserver == nil else { return }
         isStopping = false
+        screensAwake = true
         let center = NSWorkspace.shared.notificationCenter
         workspaceObservers = [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification].map { name in
             center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
@@ -94,11 +100,11 @@ final class PlaybackMonitor {
                 self?.sampleNow()
             }
         }
-        workspaceObservers.append(center.addObserver(
-            forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main
-        ) { [weak self] _ in
-            self?.scheduleEventSample()
-        })
+        for name in [NSWorkspace.screensDidSleepNotification, NSWorkspace.screensDidWakeNotification] {
+            workspaceObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
+                self?.setScreensAwake(notification.name == NSWorkspace.screensDidWakeNotification)
+            })
+        }
         // Music's notification is a hint. Always confirm it with the helper.
         musicObserver = DistributedNotificationCenter.default().addObserver(
             forName: Notification.Name("com.apple.Music.playerInfo"), object: nil, queue: .main
@@ -109,9 +115,12 @@ final class PlaybackMonitor {
         sampleNow()
     }
 
-    private func scheduleSamples(every interval: TimeInterval) {
+    private func scheduleSamples(every interval: TimeInterval?) {
+        let interval = screensAwake || pendingCommand != nil ? interval : nil
         guard timer?.timeInterval != interval else { return }
         timer?.invalidate()
+        timer = nil
+        guard let interval else { return }
         let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             self?.sampleNow()
         }
@@ -122,6 +131,18 @@ final class PlaybackMonitor {
         // Sampling through the helper is asynchronous, so keep it active while
         // the status menu is open to update its playback controls and lyrics.
         RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func setScreensAwake(_ awake: Bool) {
+        screensAwake = awake
+        if awake {
+            scheduleEventSample()
+        } else if pendingCommand == nil {
+            eventSample?.cancel()
+            eventSample = nil
+            needsEventSample = false
+            scheduleSamples(every: nil)
+        }
     }
 
     func stop() {
@@ -140,7 +161,7 @@ final class PlaybackMonitor {
     }
 
     private func scheduleEventSample() {
-        guard eventSample == nil else { return }
+        guard (screensAwake || pendingCommand != nil), eventSample == nil else { return }
         let sample = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.eventSample = nil
@@ -175,11 +196,15 @@ final class PlaybackMonitor {
         commandTimeout = nil
         let command = pendingCommand
         pendingCommand = nil
+        if !screensAwake { scheduleSamples(every: nil) }
         command?.continuation.resume(returning: confirmed)
     }
 
     func sampleNow() {
-        guard !isStopping else { return }
+        guard !isStopping, screensAwake || pendingCommand != nil || !queuedControls.isEmpty else { return }
+        // After Music quits, a launch, wake or control request restarts sampling
+        // and gives the helper a retry even if its first reply never arrives.
+        if musicObserver != nil, timer == nil { scheduleSamples(every: Self.idleInterval) }
         if let requestStartedAt {
             let timeout: TimeInterval = activeControls.isEmpty ? 2 : 5
             guard CACurrentMediaTime() - requestStartedAt > timeout else { return }
@@ -336,9 +361,9 @@ final class PlaybackMonitor {
             return .stopped
         case "musicNotRunning":
             // Keep the current lyrics if the helper briefly loses sight of a live Music process.
-            let music = NSRunningApplication.runningApplications(withBundleIdentifier: Self.musicBundleIdentifier)
-            guard music.allSatisfy(\.isTerminated) else { return nil }
-            scheduleSamples(every: Self.musicClosedInterval)
+            guard !isMusicRunning() else { return nil }
+            // A control completion may already have started another request.
+            if requestStartedAt == nil { scheduleSamples(every: nil) }
             return .musicNotRunning
         default:
             scheduleSamples(every: Self.idleInterval)

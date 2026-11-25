@@ -46,7 +46,8 @@ extension LyricsDocument {
             guard !line.hasPreferredOriginalTranslation, let translation = translations[index] else { return line }
             return LyricLine(time: line.time, text: line.text, words: line.words, translation: translation,
                              transliteration: line.transliteration, confirmedEnd: line.confirmedEnd,
-                             translationLanguage: "zh-Hans", isGap: line.isGap, isMachineTranslation: true)
+                             translationLanguage: "zh-Hans", isGap: line.isGap, isMachineTranslation: true,
+                             vocalRole: line.vocalRole, harmonies: line.harmonies)
         })
     }
 }

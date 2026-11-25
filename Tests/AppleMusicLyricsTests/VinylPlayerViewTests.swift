@@ -5,6 +5,29 @@ import XCTest
 
 @MainActor
 final class VinylPlayerViewTests: XCTestCase {
+    func testResizeKeepsSweepAtSameDiameterAndRefreshesFractionalTextureSizes() throws {
+        let view = VinylPlayerView(frame: NSRect(x: 0, y: 0, width: 178.125, height: 260))
+        view.layoutSubtreeIfNeeded()
+        let reflection = try XCTUnwrap(view.layer?.sublayers?.first { $0.name == "vinyl.environmentLight" })
+        let arm = try XCTUnwrap(view.layer?.sublayers?.first { $0.name == "vinyl.tonearm" })
+        let texture = try XCTUnwrap(reflection.contents as! CGImage?)
+        view.update(playing: true, visible: true, position: 20, duration: 90)
+        let sweepDuration = arm.animation(forKey: "grooveSweep")?.duration
+        let oldPosition = arm.position
+
+        view.setFrameSize(NSSize(width: 178.125, height: 280))
+        view.layoutSubtreeIfNeeded()
+        XCTAssertNotEqual(arm.position, oldPosition)
+        XCTAssertEqual(arm.animation(forKey: "grooveSweep")?.duration, sweepDuration)
+        XCTAssertTrue(try XCTUnwrap(reflection.contents as! CGImage?) === texture)
+
+        view.setFrameSize(NSSize(width: 178.25, height: 280))
+        view.layoutSubtreeIfNeeded()
+        let resizedTexture = try XCTUnwrap(reflection.contents as! CGImage?)
+        XCTAssertEqual(resizedTexture.width, texture.width)
+        XCTAssertFalse(resizedTexture === texture)
+    }
+
     func testMetalArtworkReusesExactGeometryAndSeparatesScale() throws {
         let first = VinylMetalRenderer.render(diameter: 160, armLength: 110, scale: 2)
         let repeated = VinylMetalRenderer.render(diameter: 160, armLength: 110, scale: 2)
@@ -277,6 +300,28 @@ final class VinylPlayerViewTests: XCTestCase {
         XCTAssertTrue(surface.contents as AnyObject? === resizedDisc)
         XCTAssertTrue(armMaterial.contents as AnyObject? === resizedArm)
         view.viewDidEndLiveResize()
+    }
+
+    func testRotatingRecordDelegatesCircularShadowToStaticLayer() throws {
+        let view = VinylPlayerView(frame: NSRect(x: 0, y: 0, width: 240, height: 190))
+        view.layoutSubtreeIfNeeded()
+        let root = try XCTUnwrap(view.layer)
+        let record = try XCTUnwrap(root.sublayers?.first { $0.name == "vinyl.record" })
+        let shadow = try XCTUnwrap(root.sublayers?.first { $0.name == "vinyl.recordShadow" })
+
+        XCTAssertEqual(record.shadowOpacity, 0)
+        XCTAssertNil(record.shadowPath)
+        XCTAssertGreaterThan(shadow.shadowOpacity, 0)
+        XCTAssertNil(shadow.animation(forKey: "rotation"))
+        XCTAssertEqual(shadow.bounds, record.bounds)
+        XCTAssertEqual(shadow.position, record.position)
+        XCTAssertEqual(try XCTUnwrap(shadow.shadowPath).boundingBox, record.bounds)
+
+        view.setFrameSize(NSSize(width: 320, height: 280))
+        view.layoutSubtreeIfNeeded()
+        XCTAssertEqual(shadow.bounds, record.bounds)
+        XCTAssertEqual(shadow.position, record.position)
+        XCTAssertEqual(try XCTUnwrap(shadow.shadowPath).boundingBox, record.bounds)
     }
 
 }

@@ -5,6 +5,7 @@ final class VinylPlayerView: NSView {
     private static let referenceBPM = 120
     private static let needleButtonRadius: CGFloat = 13
 
+    private let recordShadow = CALayer()
     private let record = CALayer()
     private let surface = CALayer()
     private let labelRing = CAShapeLayer()
@@ -27,7 +28,7 @@ final class VinylPlayerView: NSView {
     private var geometry: VinylTonearmGeometry?
     private var playbackClock = VinylPlaybackClock()
     private var cueHoldPosition: TimeInterval?
-    private var textureKey = ""
+    private var textureKey: String?
     private var laidOutSize = NSSize.zero
     private var laidOutScale: CGFloat = 0
     private var isInLiveResize = false
@@ -49,6 +50,12 @@ final class VinylPlayerView: NSView {
         super.init(frame: frame)
         wantsLayer = true
         // Static grooves and illumination are bitmaps; only the disc transform rotates.
+        recordShadow.name = "vinyl.recordShadow"
+        recordShadow.shadowColor = NSColor.black.cgColor
+        recordShadow.shadowOpacity = 0.22
+        recordShadow.shadowRadius = 2
+        recordShadow.shadowOffset = CGSize(width: 0, height: -2)
+        layer?.addSublayer(recordShadow)
         record.name = "vinyl.record"
         cover.name = "vinyl.label"
         reflection.name = "vinyl.environmentLight"
@@ -61,6 +68,7 @@ final class VinylPlayerView: NSView {
         record.addSublayer(labelRing)
         cover.masksToBounds = true
         cover.contentsGravity = .resizeAspectFill
+        cover.backgroundColor = NSColor(white: 0.22, alpha: 1).cgColor
         record.addSublayer(cover)
         spindle.fillColor = NSColor(white: 0.8, alpha: 1).cgColor
         spindle.strokeColor = NSColor(white: 0.13, alpha: 1).cgColor
@@ -71,10 +79,6 @@ final class VinylPlayerView: NSView {
         rim.strokeColor = NSColor(white: 0.7, alpha: 0.26).cgColor
         rim.lineWidth = 0.65
         layer?.addSublayer(rim)
-        record.shadowColor = NSColor.black.cgColor
-        record.shadowOpacity = 0.22
-        record.shadowRadius = 2
-        record.shadowOffset = CGSize(width: 0, height: -2)
 
         // Geometry/hit testing lives on the parent; all static metal shading
         // is baked into one child bitmap rather than stacked highlight strokes.
@@ -96,6 +100,9 @@ final class VinylPlayerView: NSView {
         pivot.shadowOpacity = 0.20
         pivot.shadowRadius = 2
         pivot.shadowOffset = CGSize(width: 0, height: -1)
+        pivotMaterial.frame = CGRect(x: -11, y: -11, width: 22, height: 22)
+        pivot.path = CGPath(ellipseIn: pivotMaterial.frame, transform: nil)
+        pivot.shadowPath = pivot.path
         layer?.addSublayer(pivot)
         pivotGlyph.fillColor = NSColor(white: 0.25, alpha: 1).cgColor
         layer?.addSublayer(pivotGlyph)
@@ -172,9 +179,20 @@ final class VinylPlayerView: NSView {
         let stateChanged = self.playing != playing
         let identityChanged = self.trackIdentity != trackIdentity
         let visibilityChanged = self.visible != visible
-        let sampleChanged = playbackClock.samplePosition != position || playbackClock.duration != duration
-        guard stateChanged || identityChanged || visibilityChanged || sampleChanged || rotationSpeed != speed else { return }
+        let presentationChanged = stateChanged || identityChanged || visibilityChanged || rotationSpeed != speed
         let now = CACurrentMediaTime()
+        let durationChanged = playbackClock.duration != duration
+        let clockNeedsCorrection = playing && self.playing && position.map {
+            abs($0 - playbackClock.position(at: now)) >= 0.2
+        } == true
+        let sampleChanged = durationChanged || playbackClock.samplePosition != position || clockNeedsCorrection
+        guard presentationChanged || sampleChanged else { return }
+        // Let the existing sweep continue when the sampled position agrees with its clock.
+        // Compare against the last scheduled sweep so small corrections cannot accumulate.
+        if !presentationChanged, playing, visible, cuePosition == nil, !durationChanged, !clockNeedsCorrection,
+           let position, position >= 0, position < playbackClock.validDuration {
+            return
+        }
         let previousAngle = displayedNeedleAngle
         if sampleChanged || stateChanged || identityChanged {
             playbackClock.update(position: position, duration: duration, playing: playing,
@@ -229,11 +247,13 @@ final class VinylPlayerView: NSView {
 
     private func layoutNeedleButton() {
         guard let container = tonearmButton.superview else { return }
-        tonearmButton.frame = container.bounds
+        if tonearmButton.frame != container.bounds { tonearmButton.frame = container.bounds }
         let center = isNeedleButtonDetached
             ? CGPoint(x: container.bounds.midX, y: container.bounds.midY) : arm.position
-        pivot.position = center
-        pivotGlyph.position = center
+        if pivot.position != center {
+            pivot.position = center
+            pivotGlyph.position = center
+        }
     }
 
     private func setNeedleHovered(_ hovered: Bool) {
@@ -321,8 +341,7 @@ final class VinylPlayerView: NSView {
         let endAngle = animate && remaining > 0 ? geometry.endAngle : angle
         arm.setValue(endAngle, forKeyPath: "transform.rotation.z")
         if animate && remaining > 0 {
-            // One server-side interpolation until the end of the song, refreshed
-            // only by the existing authoritative playback samples (no new timer).
+            // One server-side interpolation until the end of the song or a clock correction.
             let animation = CAKeyframeAnimation(keyPath: "transform.rotation.z")
             if correction > 0 {
                 animation.values = [previous, angle, endAngle]
@@ -377,19 +396,21 @@ final class VinylPlayerView: NSView {
         guard diameter > 0 else { return }
         let deferMaterialRendering = isInLiveResize || window?.inLiveResize == true
         let center = CGPoint(x: bounds.midX, y: bounds.midY - diameter * 0.04)
+        let diameterChanged = geometry?.diameter != diameter
         let geometry = VinylTonearmGeometry(diameter: diameter, center: center)
         self.geometry = geometry
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        record.bounds = CGRect(x: 0, y: 0, width: diameter, height: diameter)
+        recordShadow.position = center
         record.position = center
         let discFrame = CGRect(x: center.x - diameter / 2, y: center.y - diameter / 2, width: diameter, height: diameter)
-        surface.frame = record.bounds
         reflection.frame = discFrame
-        let key = "\(Int(ceil(diameter * scale)))@\(scale)"
+        rim.frame = discFrame
+        arm.position = geometry.pivot
+        let key = VinylMaterialCache.key(diameter: diameter, scale: scale)
         // Keep the previous bitmaps while dragging; Core Animation scales them
         // with the geometry. Render the exact pixels once live resize ends.
-        if (!deferMaterialRendering || textureKey.isEmpty),
+        if (!deferMaterialRendering || textureKey == nil),
            key != textureKey,
            let textures = VinylMaterialCache.textures(diameter: diameter, scale: scale) {
             textureKey = key
@@ -398,20 +419,38 @@ final class VinylPlayerView: NSView {
             surface.contentsScale = scale
             reflection.contentsScale = scale
         }
+        if diameterChanged { layoutDiameter(diameter, armLength: geometry.armLength) }
+        if (!deferMaterialRendering && (diameterChanged || scale != armMaterial.contentsScale || needsMaterialRefresh))
+            || armMaterial.contents == nil {
+            let metal = VinylMetalRenderer.render(diameter: diameter, armLength: geometry.armLength, scale: scale)
+            armMaterial.contents = metal.arm
+            armMaterial.contentsScale = scale
+            pivotMaterial.contents = metal.pivot
+            pivotMaterial.contentsScale = scale
+        }
+        layoutNeedleButton()
+        CATransaction.commit()
+        if !deferMaterialRendering { needsMaterialRefresh = false }
+        if diameterChanged {
+            // A different arm length changes the playable angular limits.
+            synchronizeTonearm(from: geometry.angle(at: playbackClock.progress(for: cueHoldPosition ?? playbackClock.position(at: CACurrentMediaTime()))))
+        }
+    }
+
+    private func layoutDiameter(_ diameter: CGFloat, armLength length: CGFloat) {
+        record.bounds = CGRect(x: 0, y: 0, width: diameter, height: diameter)
+        recordShadow.bounds = record.bounds
+        recordShadow.shadowPath = CGPath(ellipseIn: recordShadow.bounds, transform: nil)
+        surface.frame = record.bounds
         let coverInset = diameter * 0.245
         cover.frame = record.bounds.insetBy(dx: coverInset, dy: coverInset)
         cover.cornerRadius = cover.bounds.width / 2
-        cover.backgroundColor = NSColor(white: 0.22, alpha: 1).cgColor
         labelRing.path = CGPath(ellipseIn: cover.frame.insetBy(dx: -1.3, dy: -1.3), transform: nil)
         spindle.path = CGPath(ellipseIn: CGRect(x: diameter / 2 - 2.1, y: diameter / 2 - 2.1, width: 4.2, height: 4.2), transform: nil)
-        rim.frame = discFrame
         rim.path = CGPath(ellipseIn: rim.bounds.insetBy(dx: 0.5, dy: 0.5), transform: nil)
-        record.shadowPath = CGPath(ellipseIn: record.bounds, transform: nil)
-        arm.position = geometry.pivot
         arm.bounds = CGRect(x: 0, y: 0, width: diameter, height: diameter)
         // Unrotated arm points down. Its exact endpoint is the stylus contact;
         // circle intersection determines both playable angular limits.
-        let length = geometry.armLength
         let needle = CGMutablePath()
         needle.move(to: CGPoint(x: 0, y: diameter * 0.055))
         needle.addLine(to: CGPoint(x: 0, y: -length * 0.70))
@@ -421,27 +460,8 @@ final class VinylPlayerView: NSView {
         arm.path = needle
         arm.lineWidth = min(6, max(2.8, diameter * 0.017))
         armMaterial.frame = VinylMetalRenderer.armBounds(diameter: diameter, armLength: length)
-        if !deferMaterialRendering || armMaterial.contents == nil {
-            let metal = VinylMetalRenderer.render(diameter: diameter, armLength: length, scale: scale)
-            armMaterial.contents = metal.arm
-            armMaterial.contentsScale = scale
-            pivotMaterial.contents = metal.pivot
-            pivotMaterial.contentsScale = scale
-        }
-        pivotMaterial.frame = CGRect(x: -11, y: -11, width: 22, height: 22)
-        let shadowPath = needle.copy(strokingWithWidth: arm.lineWidth, lineCap: .round, lineJoin: .round, miterLimit: 1)
-        arm.shadowPath = shadowPath
-        let hitPath = CGMutablePath()
-        hitPath.addPath(needle.copy(strokingWithWidth: 24, lineCap: .round, lineJoin: .round, miterLimit: 1))
-        armHitPath = hitPath
-        pivot.path = CGPath(ellipseIn: CGRect(x: -11, y: -11, width: 22, height: 22), transform: nil)
-        pivot.shadowPath = pivot.path
-        layoutNeedleButton()
-        updateNeedleControl()
-        CATransaction.commit()
-        if !deferMaterialRendering { needsMaterialRefresh = false }
-        // On resizing recompute using the new geometry, not old physical angles.
-        synchronizeTonearm(from: geometry.angle(at: playbackClock.progress(for: cueHoldPosition ?? playbackClock.position(at: CACurrentMediaTime()))))
+        arm.shadowPath = needle.copy(strokingWithWidth: arm.lineWidth, lineCap: .round, lineJoin: .round, miterLimit: 1)
+        armHitPath = needle.copy(strokingWithWidth: 24, lineCap: .round, lineJoin: .round, miterLimit: 1)
     }
 
 }
@@ -500,6 +520,7 @@ private final class TonearmButton: ActionButton {
 /// Circle-circle intersection: the stylus stays in the playable annulus for
 /// every interpolated angle, independent of the component's display size.
 struct VinylTonearmGeometry {
+    let diameter: CGFloat
     let center: CGPoint
     let pivot: CGPoint
     let armLength: CGFloat
@@ -509,6 +530,7 @@ struct VinylTonearmGeometry {
     let endAngle: Double
 
     init(diameter: CGFloat, center: CGPoint) {
+        self.diameter = diameter
         self.center = center
         pivot = CGPoint(x: center.x + diameter * 0.47, y: center.y + diameter * 0.43)
         armLength = diameter * 0.65
@@ -589,10 +611,12 @@ private enum VinylMaterialCache {
         return cache
     }()
 
+    static func key(diameter: CGFloat, scale: CGFloat) -> String { "\(diameter)@\(scale)" }
+
     static func textures(diameter: CGFloat, scale: CGFloat) -> VinylMaterials? {
         let pixels = Int(ceil(diameter * scale))
         guard pixels > 0, pixels <= 4096 else { return nil }
-        let key = "\(pixels)@\(scale)" as NSString
+        let key = key(diameter: diameter, scale: scale) as NSString
         if let cached = cache.object(forKey: key) { return cached }
         func context() -> CGContext? {
             CGContext(data: nil, width: pixels, height: pixels, bitsPerComponent: 8,
@@ -614,20 +638,24 @@ private enum VinylMaterialCache {
         // Screen-space spacing stays above the pixel Nyquist limit. Small
         // deterministic variations avoid a coarse, uniformly striped pattern.
         let spacing = max(1.5, 3.0 / scale)
+        let grooveLineWidth = max(0.32, 0.75 / scale)
         var grooveRadius = diameter * 0.277
         var index = 0
+        let darkGrooves = CGMutablePath()
+        disc.setLineWidth(grooveLineWidth)
         while grooveRadius < diameter * 0.476 {
             let variation = sin(Double(index) * 2.39996)
             disc.setStrokeColor(CGColor(gray: 0.54, alpha: 0.025 + 0.018 * (variation + 1)))
-            disc.setLineWidth(max(0.32, 0.75 / scale))
             let ring = CGRect(x: center.x - grooveRadius, y: center.y - grooveRadius,
                               width: grooveRadius * 2, height: grooveRadius * 2)
             disc.strokeEllipse(in: ring)
-            disc.setStrokeColor(CGColor(gray: 0, alpha: 0.14))
-            disc.strokeEllipse(in: ring.insetBy(dx: 0.42, dy: 0.42))
+            darkGrooves.addEllipse(in: ring.insetBy(dx: 0.42, dy: 0.42))
             grooveRadius += spacing * (1 + CGFloat(variation) * 0.055)
             index += 1
         }
+        disc.setStrokeColor(CGColor(gray: 0, alpha: 0.14))
+        disc.addPath(darkGrooves)
+        disc.strokePath()
         // Lead-in / run-out and a beveled edge, all baked into one bitmap.
         for (fraction, brightness, alpha) in [(0.492, 0.6, 0.25), (0.485, 0.0, 0.7), (0.271, 0.55, 0.20), (0.263, 0.0, 0.65)] {
             let r = diameter * fraction
@@ -637,39 +665,67 @@ private enum VinylMaterialCache {
         }
         // Smooth directional reflection, independent of disc rotation. Raster
         // once per display size; no live blur, shader or animated mask.
-        let data = light.data!.assumingMemoryBound(to: UInt8.self)
+        guard let data = light.data?.assumingMemoryBound(to: UInt8.self) else { return nil }
         let centerPixel = Double(pixels) / 2
         let density = Double(scale)
         let diameterInPoints = Double(diameter)
         let grooveFrequency = 2 * Double.pi / Double(spacing)
-        let columns = (0..<pixels).map { (Double($0) + 0.5 - centerPixel) / density }
-        for y in 0..<pixels {
-            let dy = (centerPixel - Double(y) - 0.5) / density
-            for x in 0..<pixels {
-                let dx = columns[x]
+        // Keep a pixel of slack on both edges. The original point-space
+        // radius test still decides every pixel at the boundary.
+        let outerRadius = diameterInPoints * 0.497 * density + 1
+        let innerRadius = max(0, diameterInPoints * 0.261 * density - 1)
+        let centerColumn = centerPixel - 0.5
+        let firstColumn = pixels / 2
+        let columns = (firstColumn..<pixels).map { (Double($0) + 0.5 - centerPixel) / density }
+        // Mirrored pixels have the same distance and radial shading. Compute
+        // those once per group while keeping each pixel's directional lobes.
+        for y in 0..<((pixels + 1) / 2) {
+            let pixelY = centerPixel - Double(y) - 0.5
+            let ySquared = pixelY * pixelY
+            let outerSquared = outerRadius * outerRadius - ySquared
+            guard outerSquared >= 0 else { continue }
+            let upper = min(pixels, Int(floor(centerColumn + sqrt(outerSquared))) + 1)
+            let innerSquared = innerRadius * innerRadius - ySquared
+            let lower = innerSquared > 0
+                ? max(firstColumn, Int(floor(centerColumn + sqrt(innerSquared))) + 1)
+                : firstColumn
+            guard lower < upper else { continue }
+            let dy = pixelY / density
+            let mirrorY = pixels - 1 - y
+            for x in lower..<upper {
+                let dx = columns[x - firstColumn]
                 let distance = hypot(dx, dy)
                 let r = distance / diameterInPoints
                 guard r > 0.261, r < 0.497 else { continue }
-                // Same Gaussian lobes, but wrap the known [-pi, pi] angle
-                // arithmetically instead of repeating sin/cos/atan2 per lobe.
-                let theta = atan2(dy, dx)
-                func lobe(_ direction: Double, _ width: Double) -> Double {
-                    var delta = theta - direction
-                    if delta > .pi { delta -= 2 * .pi }
-                    else if delta < -.pi { delta += 2 * .pi }
-                    delta /= width
-                    return exp(-0.5 * delta * delta)
-                }
                 let edge = min(1, (r - 0.261) / 0.018) * min(1, (0.497 - r) / 0.012)
                 let bandDistance = (r - 0.405) / 0.09
                 let band = 0.72 + 0.28 * exp(-bandDistance * bandDistance)
                 let grooves = 0.93 + 0.07 * cos(distance * grooveFrequency)
-                let alpha = min(0.48, (0.44 * lobe(2.28, 0.35) + 0.21 * lobe(-0.86, 0.40)) * edge * band * grooves)
-                let offset = (y * pixels + x) * 4
-                data[offset] = UInt8(192 * alpha)
-                data[offset + 1] = UInt8(202 * alpha)
-                data[offset + 2] = UInt8(211 * alpha)
-                data[offset + 3] = UInt8(255 * alpha)
+                let radial = edge * band * grooves
+                // Derive mirrored quadrant angles from the first quadrant instead of repeating atan2.
+                let theta0 = atan2(dy, dx)
+                func drawPixel(x: Int, y: Int, theta: Double) {
+                    func lobe(_ direction: Double, _ width: Double) -> Double {
+                        var delta = theta - direction
+                        if delta > .pi { delta -= 2 * .pi }
+                        else if delta < -.pi { delta += 2 * .pi }
+                        delta /= width
+                        return exp(-0.5 * delta * delta)
+                    }
+                    let alpha = min(0.48, (0.44 * lobe(2.28, 0.35) + 0.21 * lobe(-0.86, 0.40)) * radial)
+                    let offset = (y * pixels + x) * 4
+                    data[offset] = UInt8(192 * alpha)
+                    data[offset + 1] = UInt8(202 * alpha)
+                    data[offset + 2] = UInt8(211 * alpha)
+                    data[offset + 3] = UInt8(255 * alpha)
+                }
+                let mirrorX = pixels - 1 - x
+                drawPixel(x: x, y: y, theta: theta0)
+                if mirrorX != x { drawPixel(x: mirrorX, y: y, theta: .pi - theta0) }
+                if mirrorY != y {
+                    drawPixel(x: x, y: mirrorY, theta: -theta0)
+                    if mirrorX != x { drawPixel(x: mirrorX, y: mirrorY, theta: theta0 - .pi) }
+                }
             }
         }
         guard let discImage = disc.makeImage(), let lightImage = light.makeImage() else { return nil }

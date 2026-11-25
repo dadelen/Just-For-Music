@@ -1,4 +1,5 @@
 import AppKit
+import CoreText
 import QuartzCore
 
 final class MenuBarController: NSObject {
@@ -13,7 +14,6 @@ final class MenuBarController: NSObject {
     // A single unified status item keeps all three transport controls strictly together.
     private let playbackStatusItem = MenuBarController.makeStatusItem("Playback.Controls", length: playbackItemLength)
     private let statusItem = MenuBarController.makeStatusItem("Lyrics", length: 180)
-    private var playbackStatusItems: [NSStatusItem] { [playbackStatusItem] }
     private let playerPanel = PlayerPanel(
         contentRect: NSRect(x: 0, y: 0, width: MenuPlayerView.size.width,
                             height: MenuPlayerView.size.height + MenuBarController.footerHeight),
@@ -362,10 +362,10 @@ final class MenuBarController: NSObject {
         if let window = event.window {
             guard window !== playerPanel,
                   window !== statusItem.button?.window,
-                  !playbackStatusItems.contains(where: { $0.button?.window === window }) else { return }
+                  window !== playbackStatusItem.button?.window else { return }
         } else {
             // Some status-item events have a screen location but no window.
-            for item in [statusItem] + playbackStatusItems where item.isVisible {
+            for item in [statusItem, playbackStatusItem] where item.isVisible {
                 guard let button = item.button, let window = button.window, window.isVisible,
                       window.occlusionState.contains(.visible),
                       window.convertToScreen(button.convert(button.bounds, to: nil)).contains(event.locationInWindow) else { continue }
@@ -491,7 +491,7 @@ final class MenuBarController: NSObject {
         removeDismissMonitors()
         NotificationCenter.default.removeObserver(self)
         NSWorkspace.shared.notificationCenter.removeObserver(self)
-        for item in playbackStatusItems + [statusItem] {
+        for item in [playbackStatusItem, statusItem] {
             NSStatusBar.system.removeStatusItem(item)
         }
     }
@@ -935,9 +935,19 @@ private final class MenuPlayerView: NSView {
             // Fill the rounded mask without stretching the art or leaving letterbox edges.
             let crop = NSRect(x: (size.width - side) / 2, y: (size.height - side) / 2,
                               width: side, height: side)
-            artworkView.image = NSImage(size: crop.size, flipped: false) { destination in
-                image.draw(in: destination, from: crop, operation: .sourceOver, fraction: 1)
-                return true
+            if let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil),
+               let cropped = cgImage.cropping(to: CGRect(
+                   x: crop.minX * CGFloat(cgImage.width) / size.width,
+                   y: crop.minY * CGFloat(cgImage.height) / size.height,
+                   width: crop.width * CGFloat(cgImage.width) / size.width,
+                   height: crop.height * CGFloat(cgImage.height) / size.height
+               ).integral) {
+                artworkView.image = NSImage(cgImage: cropped, size: crop.size)
+            } else {
+                artworkView.image = NSImage(size: crop.size, flipped: false) { destination in
+                    image.draw(in: destination, from: crop, operation: .sourceOver, fraction: 1)
+                    return true
+                }
             }
         }
         artworkView.contentTintColor = nil
@@ -985,20 +995,35 @@ private final class KaraokeStatusTitleView: NSView {
     }
 
     private struct LineInk {
+        struct Rasterized {
+            let image: CGImage
+            let pointSize: CGSize
+        }
+
         let upcoming: NSAttributedString
         let sung: NSAttributedString
-        let upcomingImage: NSImage?
-        let sungImage: NSImage?
+        let upcomingRaster: Rasterized?
+        let sungRaster: Rasterized?
 
         static let padding: CGFloat = 4
 
-        func draw(at origin: NSPoint, highlighted: Bool) {
-            if let image = highlighted ? sungImage : upcomingImage {
-                image.draw(
-                    in: NSRect(origin: NSPoint(x: origin.x - Self.padding, y: origin.y - Self.padding),
-                               size: image.size),
-                    from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil
+        func draw(at origin: NSPoint, highlighted: Bool, in context: CGContext) {
+            if let raster = highlighted ? sungRaster : upcomingRaster {
+                let dest = CGRect(
+                    x: origin.x - Self.padding,
+                    y: origin.y - Self.padding,
+                    width: raster.pointSize.width,
+                    height: raster.pointSize.height
                 )
+                context.saveGState()
+                if NSGraphicsContext.current?.isFlipped == true {
+                    context.translateBy(x: dest.minX, y: dest.maxY)
+                    context.scaleBy(x: 1, y: -1)
+                    context.draw(raster.image, in: CGRect(origin: .zero, size: dest.size))
+                } else {
+                    context.draw(raster.image, in: dest)
+                }
+                context.restoreGState()
             } else {
                 (highlighted ? sung : upcoming).draw(at: origin)
             }
@@ -1010,8 +1035,8 @@ private final class KaraokeStatusTitleView: NSView {
     private var displayText = ""
     private var displaySize = NSSize.zero
     private var segments: [Segment] = []
+    private var isMonotonicLTR = false
     private var animationEnd: TimeInterval = -.infinity
-    private var prefixLength = 0
     private var basePosition: TimeInterval = 0
     private var sampledAt: CFTimeInterval = 0
     private var isPlaying = false
@@ -1019,7 +1044,6 @@ private final class KaraokeStatusTitleView: NSView {
     private var currentLineID: String?
     private var renderedOriginX: CGFloat?
     private var lastDrawTime: CFTimeInterval = 0
-    private var prefixWidth: CGFloat = 0
     private var lineTransitionStartedAt: CFTimeInterval?
     private var renderedLine: LyricLine?
     private var activeColor = AppPreferences.menuBarLyricsActiveColor
@@ -1089,6 +1113,7 @@ private final class KaraokeStatusTitleView: NSView {
         displayText = ""
         displaySize = .zero
         segments = []
+        isMonotonicLTR = false
         animationEnd = -.infinity
         currentLineID = nil
         renderedLine = nil
@@ -1128,8 +1153,7 @@ private final class KaraokeStatusTitleView: NSView {
         let targetOriginX = horizontalOrigin(
             textWidth: displaySize.width,
             position: position,
-            segments: segments,
-            prefixWidth: prefixWidth
+            segments: segments
         )
         let origin = NSPoint(
             x: smoothedOrigin(target: targetOriginX, at: now),
@@ -1145,8 +1169,6 @@ private final class KaraokeStatusTitleView: NSView {
         drawLine(
             text: displayText,
             segments: segments,
-            prefixLength: prefixLength,
-            prefixWidth: prefixWidth,
             position: position,
             origin: origin,
             alpha: alpha
@@ -1157,8 +1179,6 @@ private final class KaraokeStatusTitleView: NSView {
     private func drawLine(
         text: String,
         segments: [Segment],
-        prefixLength: Int,
-        prefixWidth: CGFloat,
         position: TimeInterval,
         origin: NSPoint,
         alpha: CGFloat
@@ -1171,7 +1191,68 @@ private final class KaraokeStatusTitleView: NSView {
         defer { context.restoreGState() }
         context.setAlpha(alpha)
         guard segments.contains(where: { !$0.glyphs.isEmpty }) else {
-            ink.draw(at: origin, highlighted: false)
+            ink.draw(at: origin, highlighted: false, in: context)
+            return
+        }
+
+        if isMonotonicLTR {
+            var baseMinX = CGFloat.greatestFiniteMagnitude
+            var baseMaxX = -CGFloat.greatestFiniteMagnitude
+            var sungMaxX = -CGFloat.greatestFiniteMagnitude
+            var hasBase = false
+            var hasSung = false
+
+            for segment in segments {
+                if segment.glyphs.isEmpty {
+                    let x = origin.x + segment.offset
+                    guard segment.width > 0, x + segment.width >= 0, x <= bounds.width else { continue }
+                    hasBase = true
+                    baseMinX = min(baseMinX, x)
+                    baseMaxX = max(baseMaxX, x + segment.width)
+                    if position > segment.start {
+                        let duration = max(0.01, segment.end - segment.start)
+                        let fraction = min(1, max(0, (position - segment.start) / duration))
+                        if fraction > 0 {
+                            hasSung = true
+                            sungMaxX = max(sungMaxX, x + segment.width * fraction)
+                        }
+                    }
+                    continue
+                }
+                for glyph in segment.glyphs {
+                    let x = origin.x + glyph.offset
+                    guard glyph.width > 0, x + glyph.width >= 0, x <= bounds.width else { continue }
+                    hasBase = true
+                    baseMinX = min(baseMinX, x)
+                    baseMaxX = max(baseMaxX, x + glyph.width)
+                    if position > glyph.start {
+                        let duration = max(0.01, glyph.end - glyph.start)
+                        let fraction = min(1, max(0, (position - glyph.start) / duration))
+                        if fraction > 0 {
+                            hasSung = true
+                            sungMaxX = max(sungMaxX, x + glyph.width * fraction)
+                        }
+                    }
+                }
+            }
+            if hasBase {
+                let baseRect = CGRect(x: baseMinX, y: origin.y, width: max(0, baseMaxX - baseMinX), height: bounds.height)
+                    .intersection(bounds)
+                if !baseRect.isEmpty {
+                    context.saveGState()
+                    context.clip(to: baseRect)
+                    ink.draw(at: origin, highlighted: false, in: context)
+                    context.restoreGState()
+                }
+            }
+            if hasSung {
+                let sungRect = CGRect(x: baseMinX, y: origin.y, width: max(0, sungMaxX - baseMinX), height: bounds.height)
+                    .intersection(bounds)
+                if !sungRect.isEmpty {
+                    context.clip(to: sungRect)
+                    ink.draw(at: origin, highlighted: true, in: context)
+                }
+            }
             return
         }
 
@@ -1187,9 +1268,6 @@ private final class KaraokeStatusTitleView: NSView {
             }
         }
 
-        if prefixLength > 0 {
-            addUnit(offset: 0, width: prefixWidth, fraction: 1)
-        }
         for segment in segments {
             if segment.glyphs.isEmpty {
                 let duration = max(0.01, segment.end - segment.start)
@@ -1209,13 +1287,13 @@ private final class KaraokeStatusTitleView: NSView {
             context.saveGState()
             context.addPath(baseClip)
             context.clip()
-            ink.draw(at: origin, highlighted: false)
+            ink.draw(at: origin, highlighted: false, in: context)
             context.restoreGState()
         }
         if !sungClip.isEmpty {
             context.addPath(sungClip)
             context.clip()
-            ink.draw(at: origin, highlighted: true)
+            ink.draw(at: origin, highlighted: true, in: context)
         }
     }
 
@@ -1239,12 +1317,12 @@ private final class KaraokeStatusTitleView: NSView {
         let sung = NSAttributedString(string: text, attributes: [
             .font: font, .foregroundColor: sungColor, .paragraphStyle: paragraph
         ])
-        let result = LineInk(upcoming: upcoming, sung: sung, upcomingImage: rasterize(upcoming), sungImage: rasterize(sung))
+        let result = LineInk(upcoming: upcoming, sung: sung, upcomingRaster: rasterize(upcoming), sungRaster: rasterize(sung))
         lineInk[text] = result
         return result
     }
 
-    private func rasterize(_ text: NSAttributedString) -> NSImage? {
+    private func rasterize(_ text: NSAttributedString) -> LineInk.Rasterized? {
         let size = text.size()
         let padding = LineInk.padding
         let width = Int(ceil((size.width + 2 * padding) * inkScale))
@@ -1261,25 +1339,23 @@ private final class KaraokeStatusTitleView: NSView {
         text.draw(at: NSPoint(x: padding, y: padding))
         NSGraphicsContext.restoreGraphicsState()
         guard let rendered = bitmap.makeImage() else { return nil }
-        let representation = NSBitmapImageRep(cgImage: rendered)
-        representation.size = NSSize(width: CGFloat(width) / inkScale, height: CGFloat(height) / inkScale)
-        let image = NSImage(size: representation.size)
-        image.addRepresentation(representation)
-        return image
+        return LineInk.Rasterized(
+            image: rendered,
+            pointSize: CGSize(width: CGFloat(width) / inkScale, height: CGFloat(height) / inkScale)
+        )
     }
 
     private func horizontalOrigin(
         textWidth: CGFloat,
         position: TimeInterval,
-        segments: [Segment],
-        prefixWidth: CGFloat
+        segments: [Segment]
     ) -> CGFloat {
         let padding: CGFloat = 7
         guard textWidth > bounds.width - padding * 2 else {
             return floor((bounds.width - textWidth) / 2)
         }
 
-        var cursor = prefixWidth
+        var cursor: CGFloat = 0
         for segment in segments {
             if position < segment.start {
                 cursor = segment.offset
@@ -1318,7 +1394,6 @@ private final class KaraokeStatusTitleView: NSView {
     }
 
     private func rebuildDisplay(line: LyricLine) {
-        let prefix = ""
         let result = NSMutableString()
         var rebuilt: [Segment] = []
         for word in line.words {
@@ -1335,10 +1410,12 @@ private final class KaraokeStatusTitleView: NSView {
             attributes: [.font: font]
         )
         displaySize = metrics.size()
+        let ctLine = CTLineCreateWithAttributedString(metrics)
         segments = rebuilt.map { segment in
-            let prefixRange = NSRange(location: 0, length: segment.range.location)
-            let offset = metrics.attributedSubstring(from: prefixRange).size().width
-            let width = metrics.attributedSubstring(from: segment.range).size().width
+            let startX = CTLineGetOffsetForStringIndex(ctLine, segment.range.location, nil)
+            let endX = CTLineGetOffsetForStringIndex(ctLine, NSMaxRange(segment.range), nil)
+            let offset = min(startX, endX)
+            let width = abs(endX - startX)
             return Segment(
                 range: segment.range,
                 start: segment.start,
@@ -1347,29 +1424,49 @@ private final class KaraokeStatusTitleView: NSView {
                 width: width,
                 glyphs: timedGlyphs(
                     in: segment.range,
-                    metrics: metrics,
+                    ctLine: ctLine,
                     start: segment.start,
                     end: segment.end,
                     totalWidth: width
                 )
             )
         }
+        var monotonic = true
+        var lastOffset: CGFloat = 0
+        var lastTime = -Double.infinity
+        for segment in segments {
+            if segment.glyphs.isEmpty {
+                if segment.width > 0 {
+                    if segment.offset < lastOffset - 0.5 || segment.start < lastTime - 0.001 || segment.end < segment.start {
+                        monotonic = false
+                        break
+                    }
+                    lastOffset = segment.offset + segment.width
+                    lastTime = segment.end
+                }
+            } else {
+                for glyph in segment.glyphs {
+                    if glyph.offset < lastOffset - 0.5 || glyph.start < lastTime - 0.001 || glyph.end < glyph.start {
+                        monotonic = false
+                        break
+                    }
+                    lastOffset = glyph.offset + glyph.width
+                    lastTime = glyph.end
+                }
+                if !monotonic { break }
+            }
+        }
+        isMonotonicLTR = monotonic
         animationEnd = segments.reduce(-Double.infinity) { end, segment in
             segment.glyphs.reduce(max(end, max(segment.end, segment.start + 0.01))) { end, glyph in
                 max(end, max(glyph.end, glyph.start + 0.01))
             }
         }
-        prefixLength = (prefix as NSString).length
-        prefixWidth = prefixLength > 0
-            ? metrics.attributedSubstring(
-                from: NSRange(location: 0, length: prefixLength)
-            ).size().width
-            : 0
     }
 
     private func timedGlyphs(
         in range: NSRange,
-        metrics: NSAttributedString,
+        ctLine: CTLine,
         start: TimeInterval,
         end: TimeInterval,
         totalWidth: CGFloat
@@ -1388,10 +1485,11 @@ private final class KaraokeStatusTitleView: NSView {
         let duration = max(0.01, end - start)
         var consumedWidth: CGFloat = 0
         return ranges.compactMap { glyphRange in
-            let width = metrics.attributedSubstring(from: glyphRange).size().width
+            let startX = CTLineGetOffsetForStringIndex(ctLine, glyphRange.location, nil)
+            let endX = CTLineGetOffsetForStringIndex(ctLine, NSMaxRange(glyphRange), nil)
+            let offset = min(startX, endX)
+            let width = abs(endX - startX)
             guard width > 0 else { return nil }
-            let prefixRange = NSRange(location: 0, length: glyphRange.location)
-            let offset = metrics.attributedSubstring(from: prefixRange).size().width
             let glyphStart = start + duration * TimeInterval(consumedWidth / totalWidth)
             consumedWidth += width
             let glyphEnd = start + duration * TimeInterval(consumedWidth / totalWidth)
@@ -1411,7 +1509,7 @@ private final class KaraokeStatusTitleView: NSView {
         if position < animationEnd { return true }
         guard let renderedOriginX else { return false }
         return renderedOriginX != horizontalOrigin(
-            textWidth: displaySize.width, position: position, segments: segments, prefixWidth: prefixWidth
+            textWidth: displaySize.width, position: position, segments: segments
         )
     }
 
