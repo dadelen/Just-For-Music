@@ -26,6 +26,14 @@ final class VinylPlayerViewTests: XCTestCase {
         let resizedTexture = try XCTUnwrap(reflection.contents as! CGImage?)
         XCTAssertEqual(resizedTexture.width, texture.width)
         XCTAssertFalse(resizedTexture === texture)
+
+        view.previewSettingsResize()
+        view.setFrameSize(NSSize(width: 195.25, height: 280))
+        view.layoutSubtreeIfNeeded()
+        XCTAssertTrue(try XCTUnwrap(reflection.contents as! CGImage?) === resizedTexture)
+        view.finishSettingsResize()
+        view.layoutSubtreeIfNeeded()
+        XCTAssertFalse(try XCTUnwrap(reflection.contents as! CGImage?) === resizedTexture)
     }
 
     func testMetalArtworkReusesExactGeometryAndSeparatesScale() throws {
@@ -322,6 +330,28 @@ final class VinylPlayerViewTests: XCTestCase {
         XCTAssertEqual(shadow.bounds, record.bounds)
         XCTAssertEqual(shadow.position, record.position)
         XCTAssertEqual(try XCTUnwrap(shadow.shadowPath).boundingBox, record.bounds)
+    }
+
+    func testVinylRasterizesSpinningDiscCapsFrameRatesAndBakesTonearmShadow() throws {
+        let view = VinylPlayerView(frame: NSRect(x: 0, y: 0, width: 240, height: 190))
+        view.layoutSubtreeIfNeeded()
+        let root = try XCTUnwrap(view.layer)
+        let record = try XCTUnwrap(root.sublayers?.first { $0.name == "vinyl.record" })
+        let arm = try XCTUnwrap(root.sublayers?.first { $0.name == "vinyl.tonearm" })
+        XCTAssertTrue(record.shouldRasterize)
+        XCTAssertEqual(arm.shadowOpacity, 0)
+        XCTAssertNil(arm.shadowPath)
+        let rotation = try XCTUnwrap(record.animation(forKey: "rotation"))
+        XCTAssertLessThanOrEqual(rotation.preferredFrameRateRange.maximum, 30)
+
+        view.update(playing: true, visible: true, trackIdentity: "song", position: 20, duration: 200)
+        // Triggering a diameter change synchronizes the steady-state groove sweep with zero correction.
+        view.setFrameSize(NSSize(width: 280, height: 220))
+        view.layoutSubtreeIfNeeded()
+        if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            let sweep = try XCTUnwrap(arm.animation(forKey: "grooveSweep") as? CAKeyframeAnimation)
+            XCTAssertLessThanOrEqual(sweep.preferredFrameRateRange.maximum, 10)
+        }
     }
 
 }

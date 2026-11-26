@@ -72,6 +72,9 @@ final class GlassSurface: NSView {
         guard adjustableOpacity, let material else { return }
         material.alphaValue = backgroundOpacity
         material.isHidden = backgroundOpacity == 0
+        if let effect = material as? NSVisualEffectView {
+            effect.state = backgroundOpacity == 0 ? .inactive : .active
+        }
     }
 
     private func installLegacyMaterial() {

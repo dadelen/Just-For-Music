@@ -1,4 +1,5 @@
 import AppKit
+import CoreServices
 import Darwin
 import Foundation
 import QuartzCore
@@ -15,13 +16,13 @@ final class PlaybackMonitor {
 
     struct CommandExpectation {
         let state: PlayerState
-        let trackKey: String?
+        let trackKey: String
 
         // nil means keep waiting on the normal playback sampling loop.
         func resolution(for update: Update) -> Bool? {
             switch update {
             case .track(let track):
-                if let trackKey, track.identityKey != trackKey { return false }
+                if track.identityKey != trackKey { return false }
                 return track.state == state ? true : nil
             case .musicNotRunning: return false
             case .stopped, .failure: return nil
@@ -381,6 +382,14 @@ final class PlaybackMonitor {
         guard let executable = Bundle.main.executableURL else { return nil }
         let sibling = executable.deletingLastPathComponent().appendingPathComponent(Self.helperName)
         return FileManager.default.isExecutableFile(atPath: sibling.path) ? sibling : nil
+    }
+
+    static func hasMusicAutomationAccess() -> Bool {
+        let target = NSAppleEventDescriptor(bundleIdentifier: musicBundleIdentifier)
+        guard let address = target.aeDesc else { return false }
+        return withExtendedLifetime(target) {
+            AEDeterminePermissionToAutomateTarget(address, AEEventClass(typeWildCard), AEEventID(typeWildCard), false) == noErr
+        }
     }
 }
 

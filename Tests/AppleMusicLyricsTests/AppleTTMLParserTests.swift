@@ -86,6 +86,7 @@ final class AppleTTMLParserTests: XCTestCase {
         XCTAssertEqual(presentation.map(\.text), ["同唱", "Hello", "World", "Echo", "Together"])
         XCTAssertEqual(presentation.map(\.time), [1, 1, 4, 5, 8])
         XCTAssertEqual(presentation.map(\.vocalRole), [.leadHarmony, .lead, .partner, .partnerHarmony, .lead])
+        XCTAssertEqual(presentation.map(\.isRightAligned), [true, false, true, true, false])
         XCTAssertEqual(presentation[2].translation, "世界")
         XCTAssertEqual(presentation[0].words, [
             LyricWord(text: "同", start: 1, end: 2), LyricWord(text: "唱", start: 2, end: 3)
@@ -102,11 +103,14 @@ final class AppleTTMLParserTests: XCTestCase {
           <p begin="8s" end="9s">(Oh)</p>
           <p begin="9s" end="10s">A mismatched (aside）</p>
           <p begin="10s" end="12s">再见（回声）</p>
+          <p begin="12s" end="13s">\u{200E}（一起）！\u{200F}</p>
         </div></body></tt>
         """
         let lines = try AppleTTMLParser.parse(ttml).lines
-        XCTAssertEqual(lines.map(\.text), ["Sing (very) softly", "主唱", "(Oh)", "A mismatched (aside）", "再见"])
-        XCTAssertEqual(lines.map(\.vocalRole), [.lead, .lead, .leadHarmony, .lead, .lead])
+        XCTAssertEqual(lines.map(\.text), [
+            "Sing (very) softly", "主唱", "(Oh)", "A mismatched (aside）", "再见", "\u{200E}（一起）！\u{200F}"
+        ])
+        XCTAssertEqual(lines.map(\.vocalRole), [.lead, .lead, .leadHarmony, .lead, .lead, .leadHarmony])
         XCTAssertTrue(lines[0].harmonies.isEmpty)
         XCTAssertEqual(lines[1].harmonies.first?.words, [
             LyricWord(text: "（和声 (echo)）", start: 5, end: 8)
@@ -118,8 +122,9 @@ final class AppleTTMLParserTests: XCTestCase {
         let document = LyricsDocument(lines: lines, plainText: nil, source: "test",
                                       isSynced: true, wordTiming: .exact)
         XCTAssertEqual(document.floatingLines.map(\.text), [
-            "Sing (very) softly", "主唱", "和声 (echo)", "Oh", "A mismatched (aside）", "再见", "回声"
+            "Sing (very) softly", "主唱", "和声 (echo)", "Oh", "A mismatched (aside）", "再见", "回声", "\u{200E}一起！\u{200F}"
         ])
+        XCTAssertEqual(document.floatingLines.map(\.isRightAligned), [false, false, true, true, false, false, true, true])
     }
 
     func testFloatingHarmonyHidesRepeatedOuterBracketsAcrossTimedSpans() {

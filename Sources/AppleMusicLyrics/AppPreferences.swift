@@ -1,22 +1,34 @@
 import AppKit
 import Foundation
 
-enum FloatingLyricsSpaceBehavior: String, CaseIterable {
-    case currentDesktop
-    case allSpaces
+enum PlaybackSource: String, CaseIterable, Sendable {
+    case appleMusic, netease
+
+    var bundleIdentifier: String {
+        switch self {
+        case .appleMusic: return "com.apple.Music"
+        case .netease: return "com.netease.163music"
+        }
+    }
 
     var title: String {
         switch self {
-        case .currentDesktop: return "Current Desktop"
-        case .allSpaces: return "All Desktops"
+        case .appleMusic: return "Apple Music"
+        case .netease: return "网易云音乐"
         }
     }
+}
+
+enum FloatingLyricsSpaceBehavior: String {
+    case currentDesktop
+    case allSpaces
 }
 
 enum FloatingLyricsMode: String, CaseIterable {
     case vinyl, minimal
 
-    static let minimumVinylSize = NSSize(width: 640, height: 260)
+    static let defaultVinylSize = NSSize(width: 640, height: 260)
+    static let minimumVinylSize = NSSize(width: 320, height: 152)
     static let maximumVinylSize = NSSize(width: 880, height: 380)
     static let minimalSize = NSSize(width: 440, height: 300)
 
@@ -27,10 +39,15 @@ enum FloatingLyricsMode: String, CaseIterable {
         }
     }
 
-    static func clampedVinylSize(_ size: NSSize) -> NSSize {
-        NSSize(
-            width: size.width.isFinite ? max(minimumVinylSize.width, size.width) : minimumVinylSize.width,
-            height: size.height.isFinite ? max(minimumVinylSize.height, size.height) : minimumVinylSize.height
+    var minimumSize: NSSize {
+        self == .vinyl ? Self.minimumVinylSize : NSSize(width: 220, height: 112)
+    }
+
+    func clampedSize(_ size: NSSize) -> NSSize {
+        let minimum = minimumSize
+        return NSSize(
+            width: size.width.isFinite ? max(minimum.width, size.width) : minimum.width,
+            height: size.height.isFinite ? max(minimum.height, size.height) : minimum.height
         )
     }
 }
@@ -73,6 +90,11 @@ struct OnlineTranslationProfiles: Codable {
 
 enum AppPreferences {
     static let didChange = Notification.Name("LyricsPreferencesChanged")
+    static let playbackSourceKey = "playback.source"
+    static var playbackSource: PlaybackSource {
+        get { enumValue(playbackSourceKey, default: .appleMusic) }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: playbackSourceKey) }
+    }
     static let statusBarModeKey = "statusBar.mode"
     static let automaticTranslationKey = "translation.enabled"
     static let translationProviderKey = "translation.provider"
@@ -102,19 +124,26 @@ enum AppPreferences {
         set { UserDefaults.standard.set(newValue.rawValue, forKey: floatingLyricsModeKey) }
     }
     static var floatingLyricsVinylSize: NSSize {
-        get {
-            if let stored = UserDefaults.standard.string(forKey: Key.vinylSize) {
-                return FloatingLyricsMode.clampedVinylSize(NSSizeFromString(stored))
-            }
-            // The floating controller is created before the launch migration.
-            return UserDefaults.standard.string(forKey: floatingLyricsModeKey) == "large"
-                ? FloatingLyricsMode.maximumVinylSize : FloatingLyricsMode.minimumVinylSize
+        get { floatingLyricsSize(for: .vinyl) }
+        set { setFloatingLyricsSize(newValue, for: .vinyl) }
+    }
+
+    static func floatingLyricsSize(for mode: FloatingLyricsMode) -> NSSize {
+        let key = mode == .vinyl ? Key.vinylSize : Key.minimalSize
+        if let stored = UserDefaults.standard.string(forKey: key) {
+            return mode.clampedSize(NSSizeFromString(stored))
         }
-        set {
-            let value = NSStringFromSize(FloatingLyricsMode.clampedVinylSize(newValue))
-            if value != UserDefaults.standard.string(forKey: Key.vinylSize) {
-                UserDefaults.standard.set(value, forKey: Key.vinylSize)
-            }
+        if mode == .minimal { return FloatingLyricsMode.minimalSize }
+        // The floating controller is created before the launch migration.
+        return UserDefaults.standard.string(forKey: floatingLyricsModeKey) == "large"
+            ? FloatingLyricsMode.maximumVinylSize : FloatingLyricsMode.defaultVinylSize
+    }
+
+    static func setFloatingLyricsSize(_ size: NSSize, for mode: FloatingLyricsMode) {
+        let key = mode == .vinyl ? Key.vinylSize : Key.minimalSize
+        let value = NSStringFromSize(mode.clampedSize(size))
+        if value != UserDefaults.standard.string(forKey: key) {
+            UserDefaults.standard.set(value, forKey: key)
         }
     }
     static var floatingPositionLocked: Bool {
@@ -178,6 +207,7 @@ enum AppPreferences {
         static let showTransliteration = "floatingLyrics.showTransliteration"
         static let glassTransparency = "floatingLyrics.glassTransparency"
         static let vinylSize = "floatingLyrics.vinylSize"
+        static let minimalSize = "floatingLyrics.minimalSize"
         static let framesByDisplay = "floatingLyrics.framesByDisplay"
         static let lastDisplay = "floatingLyrics.lastDisplay"
         static let menuBarActiveColor = "menuBarLyrics.activeColor"

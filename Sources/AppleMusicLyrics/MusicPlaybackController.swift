@@ -1,15 +1,14 @@
 import Foundation
 
+@MainActor
 final class MusicPlaybackController {
     enum Command: String {
         case previous, toggle, next, play, pause
-        case cuePrevious = "cue-previous"
-        case cueNext = "cue-next"
     }
 
-    private let monitor: PlaybackMonitor
+    private let monitor: PlaybackTransport
 
-    init(monitor: PlaybackMonitor) {
+    init(monitor: PlaybackTransport) {
         self.monitor = monitor
     }
 
@@ -31,30 +30,16 @@ final class MusicPlaybackController {
 
 @MainActor
 enum NeedlePlayback {
-    static func run(
-        _ command: MusicPlaybackController.Command,
+    static func toggle(
         startingAt track: TrackInfo,
         moveNeedle: (Bool) async -> Void,
-        perform: (MusicPlaybackController.Command) async -> Bool,
+        setPlaybackState: (PlayerState) async -> Void,
         currentTrack: () -> TrackInfo?
     ) async {
-        let wasPlaying = track.state == .playing
-        let willPlay = command == .toggle && !wasPlaying
-        await moveNeedle(willPlay)
-        guard matches(track, currentTrack()) else { return }
-
-        if command == .toggle {
-            _ = await perform(willPlay ? .play : .pause)
-            return
-        }
-        let switched = await perform(command == .previous ? .cuePrevious : .cueNext)
-        guard switched, wasPlaying, let queuedTrack = currentTrack(), queuedTrack.state == .paused else { return }
-        await moveNeedle(true)
-        guard matches(queuedTrack, currentTrack()) else { return }
-        _ = await perform(.play)
-    }
-
-    private static func matches(_ expected: TrackInfo, _ current: TrackInfo?) -> Bool {
-        !Task.isCancelled && current?.identityKey == expected.identityKey && current?.state == expected.state
+        let target: PlayerState = track.state == .playing ? .paused : .playing
+        await moveNeedle(target == .playing)
+        guard !Task.isCancelled, let current = currentTrack(),
+              current.identityKey == track.identityKey, current.state == track.state else { return }
+        await setPlaybackState(target)
     }
 }

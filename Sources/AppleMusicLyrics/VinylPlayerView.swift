@@ -32,10 +32,13 @@ final class VinylPlayerView: NSView {
     private var laidOutSize = NSSize.zero
     private var laidOutScale: CGFloat = 0
     private var isInLiveResize = false
+    private var settingsResizeTimer: Timer?
     private var needsMaterialRefresh = false
     private var cuePosition: Bool?
     private var artwork: NSImage?
     private var artworkNeedsUpdate = true
+    private var preferredRotationMaxFPS: Float = 0
+    private var steadySweepWorkItem: DispatchWorkItem?
     var onTogglePlayPause: (() -> Void)?
     var allowsPlaybackControl = false {
         didSet {
@@ -57,6 +60,8 @@ final class VinylPlayerView: NSView {
         recordShadow.shadowOffset = CGSize(width: 0, height: -2)
         layer?.addSublayer(recordShadow)
         record.name = "vinyl.record"
+        record.shouldRasterize = true
+        record.rasterizationScale = NSScreen.main?.backingScaleFactor ?? 2
         cover.name = "vinyl.label"
         reflection.name = "vinyl.environmentLight"
         arm.name = "vinyl.tonearm"
@@ -80,17 +85,13 @@ final class VinylPlayerView: NSView {
         rim.lineWidth = 0.65
         layer?.addSublayer(rim)
 
-        // Geometry/hit testing lives on the parent; all static metal shading
-        // is baked into one child bitmap rather than stacked highlight strokes.
+        // Geometry/hit testing lives on the parent; all static metal shading and shadow
+        // are baked into one child bitmap rather than stacked highlight strokes.
         arm.fillColor = nil
         arm.strokeColor = NSColor.clear.cgColor
         arm.lineCap = .round
         arm.lineJoin = .round
         arm.anchorPoint = .zero
-        arm.shadowColor = NSColor.black.cgColor
-        arm.shadowOpacity = 0.15
-        arm.shadowRadius = 1.4
-        arm.shadowOffset = CGSize(width: 0.7, height: -1)
         arm.addSublayer(armMaterial)
         pivot.addSublayer(pivotMaterial)
         layer?.addSublayer(arm)
@@ -112,14 +113,7 @@ final class VinylPlayerView: NSView {
         tonearmButton.onPress = { [weak self] in self?.onTogglePlayPause?() }
         addSubview(tonearmButton)
         updateNeedleControl()
-        let rotation = CABasicAnimation(keyPath: "transform.rotation.z")
-        rotation.fromValue = 0
-        rotation.toValue = -2 * Double.pi
-        rotation.duration = 12 * 60 / Double(Self.referenceBPM)
-        rotation.timingFunction = CAMediaTimingFunction(name: .linear)
-        rotation.repeatCount = .infinity
-        rotation.isRemovedOnCompletion = false
-        record.add(rotation, forKey: "rotation")
+        configureRotationAnimation()
         setRotationSpeed(0)
         setAccessibilityRole(.group)
         setAccessibilityLabel("当前专辑黑胶唱片")
@@ -127,7 +121,11 @@ final class VinylPlayerView: NSView {
     }
 
     required init?(coder: NSCoder) { nil }
-    deinit { NSWorkspace.shared.notificationCenter.removeObserver(self) }
+    deinit {
+        steadySweepWorkItem?.cancel()
+        settingsResizeTimer?.invalidate()
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
+    }
 
     override var mouseDownCanMoveWindow: Bool { true }
 
@@ -144,6 +142,28 @@ final class VinylPlayerView: NSView {
     override func viewDidEndLiveResize() {
         super.viewDidEndLiveResize()
         isInLiveResize = false
+        needsMaterialRefresh = true
+        needsLayout = true
+    }
+
+    func previewSettingsResize() {
+        let delay: TimeInterval = 0.12
+        let deadline = Date(timeIntervalSinceNow: delay)
+        if let settingsResizeTimer {
+            settingsResizeTimer.fireDate = deadline
+            return
+        }
+        let timer = Timer(fire: deadline, interval: delay, repeats: false) { [weak self] _ in
+            self?.finishSettingsResize()
+        }
+        settingsResizeTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    func finishSettingsResize() {
+        guard let settingsResizeTimer else { return }
+        settingsResizeTimer.invalidate()
+        self.settingsResizeTimer = nil
         needsMaterialRefresh = true
         needsLayout = true
     }
@@ -288,6 +308,33 @@ final class VinylPlayerView: NSView {
 
     @objc private func accessibilityAnimationChanged() { updateAnimation() }
 
+    func refreshFrameRate() {
+        configureRotationAnimation()
+        if playing, visible, cuePosition != false {
+            synchronizeTonearm()
+        }
+    }
+
+    private func configureRotationAnimation() {
+        let lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
+        let targetMax: Float = lowPower ? 20 : 30
+        guard preferredRotationMaxFPS != targetMax || record.animation(forKey: "rotation") == nil else { return }
+        preferredRotationMaxFPS = targetMax
+        let rotation = CABasicAnimation(keyPath: "transform.rotation.z")
+        rotation.fromValue = 0
+        rotation.toValue = -2 * Double.pi
+        rotation.duration = 12 * 60 / Double(Self.referenceBPM)
+        rotation.timingFunction = CAMediaTimingFunction(name: .linear)
+        rotation.repeatCount = .infinity
+        rotation.isRemovedOnCompletion = false
+        rotation.preferredFrameRateRange = CAFrameRateRange(
+            minimum: lowPower ? 15 : 24,
+            maximum: targetMax,
+            preferred: targetMax
+        )
+        record.add(rotation, forKey: "rotation")
+    }
+
     private func updateAnimation(from previousAngle: Double? = nil, returning: Bool = false) {
         let reducedMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         setRotationSpeed(playing && visible && cuePosition != false && !reducedMotion ? rotationSpeed : 0)
@@ -324,6 +371,8 @@ final class VinylPlayerView: NSView {
     }
 
     private func synchronizeTonearm(from previousAngle: Double? = nil, returning: Bool = false) {
+        steadySweepWorkItem?.cancel()
+        steadySweepWorkItem = nil
         guard let geometry else { return }
         let position = cueHoldPosition ?? playbackClock.position(at: CACurrentMediaTime())
         let progress = playbackClock.progress(for: position)
@@ -334,6 +383,8 @@ final class VinylPlayerView: NSView {
         let remaining = moving ? max(0, playbackClock.validDuration - position) : 0
         let animate = visible && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         let correction = animate && abs(previous - angle) > 0.001 ? (cuePosition != nil ? 0.28 : (returning ? 0.30 : 0.22)) : 0
+        let lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
+        let transitionRange = CAFrameRateRange(minimum: 24, maximum: lowPower ? 30 : 60, preferred: lowPower ? 30 : 60)
         arm.removeAnimation(forKey: "needle")
         arm.removeAnimation(forKey: "grooveSweep")
         CATransaction.begin()
@@ -347,10 +398,20 @@ final class VinylPlayerView: NSView {
                 animation.values = [previous, angle, endAngle]
                 animation.keyTimes = [0, NSNumber(value: correction / (remaining + correction)), 1]
                 animation.timingFunctions = [CAMediaTimingFunction(name: .easeInEaseOut), CAMediaTimingFunction(name: .linear)]
+                animation.preferredFrameRateRange = transitionRange
+                let workItem = DispatchWorkItem { [weak self] in
+                    guard let self else { return }
+                    self.steadySweepWorkItem = nil
+                    guard self.playing, self.visible, self.cuePosition != false else { return }
+                    self.synchronizeTonearm()
+                }
+                steadySweepWorkItem = workItem
+                DispatchQueue.main.asyncAfter(deadline: .now() + correction + 0.05, execute: workItem)
             } else {
                 animation.values = [angle, endAngle]
                 animation.keyTimes = [0, 1]
                 animation.timingFunctions = [CAMediaTimingFunction(name: .linear)]
+                animation.preferredFrameRateRange = CAFrameRateRange(minimum: 1, maximum: 6, preferred: 4)
             }
             animation.duration = remaining + correction
             arm.add(animation, forKey: "grooveSweep")
@@ -360,6 +421,7 @@ final class VinylPlayerView: NSView {
             animation.toValue = angle
             animation.duration = correction
             animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            animation.preferredFrameRateRange = transitionRange
             arm.add(animation, forKey: "needle")
         }
         CATransaction.commit()
@@ -392,9 +454,10 @@ final class VinylPlayerView: NSView {
         }
         laidOutSize = bounds.size
         laidOutScale = scale
+        if record.rasterizationScale != scale { record.rasterizationScale = scale }
         let diameter = min(bounds.width - 28, (bounds.height - 26) / 1.08)
         guard diameter > 0 else { return }
-        let deferMaterialRendering = isInLiveResize || window?.inLiveResize == true
+        let deferMaterialRendering = isInLiveResize || window?.inLiveResize == true || settingsResizeTimer != nil
         let center = CGPoint(x: bounds.midX, y: bounds.midY - diameter * 0.04)
         let diameterChanged = geometry?.diameter != diameter
         let geometry = VinylTonearmGeometry(diameter: diameter, center: center)
@@ -460,7 +523,6 @@ final class VinylPlayerView: NSView {
         arm.path = needle
         arm.lineWidth = min(6, max(2.8, diameter * 0.017))
         armMaterial.frame = VinylMetalRenderer.armBounds(diameter: diameter, armLength: length)
-        arm.shadowPath = needle.copy(strokingWithWidth: arm.lineWidth, lineCap: .round, lineJoin: .round, miterLimit: 1)
         armHitPath = needle.copy(strokingWithWidth: 24, lineCap: .round, lineJoin: .round, miterLimit: 1)
     }
 
@@ -471,6 +533,7 @@ private final class TonearmButton: ActionButton {
     var onHover: ((Bool) -> Void)?
     private var moveTracking: NSTrackingArea?
     private var pressed = false
+    private var isHovered = false
 
     override var mouseDownCanMoveWindow: Bool { false }
 
@@ -492,11 +555,15 @@ private final class TonearmButton: ActionButton {
 
     override func mouseMoved(with event: NSEvent) {
         let hovered = contains(event)
+        guard hovered != isHovered else { return }
+        isHovered = hovered
         onHover?(hovered)
         (hovered ? NSCursor.pointingHand : NSCursor.arrow).set()
     }
 
     override func mouseExited(with event: NSEvent) {
+        guard isHovered else { return }
+        isHovered = false
         onHover?(false)
         NSCursor.arrow.set()
     }
@@ -757,8 +824,8 @@ enum VinylMetalRenderer {
     }()
 
     static func armBounds(diameter: CGFloat, armLength: CGFloat) -> CGRect {
-        let halfWidth = max(16, diameter * 0.048 + 6)
-        return CGRect(x: -halfWidth, y: -armLength - 5, width: 2 * halfWidth, height: armLength + 25)
+        let halfWidth = max(19, diameter * 0.048 + 9)
+        return CGRect(x: -halfWidth, y: -armLength - 8, width: 2 * halfWidth, height: armLength + 31)
     }
 
     static func render(diameter: CGFloat, armLength: CGFloat, scale: CGFloat) -> Result {
@@ -790,6 +857,10 @@ enum VinylMetalRenderer {
         }
         let ctx = context(armBounds)
         if let ctx {
+            ctx.saveGState()
+            ctx.setShadow(offset: CGSize(width: 0.7, height: -1), blur: 2.8,
+                          color: NSColor.black.withAlphaComponent(0.15).cgColor)
+            ctx.beginTransparencyLayer(auxiliaryInfo: nil)
             let p0 = CGPoint(x: 0, y: -armLength * 0.68)
             let p1 = CGPoint(x: diameter * 0.035, y: -armLength * 0.80)
             let p2 = CGPoint(x: diameter * 0.030, y: -armLength * 0.91)
@@ -884,6 +955,8 @@ enum VinylMetalRenderer {
                     ctx.fillEllipse(in: CGRect(x: x - 0.5, y: head.maxY - 4.2, width: 1, height: 1))
                 }
             }
+            ctx.endTransparencyLayer()
+            ctx.restoreGState()
         }
         let hub = context(CGRect(x: -11, y: -11, width: 22, height: 22))
         if let hub {

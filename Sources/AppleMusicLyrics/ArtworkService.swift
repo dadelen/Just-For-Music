@@ -58,7 +58,7 @@ final class ArtworkService {
             }
             guard let self, !Task.isCancelled, self.generation == request else { return }
             var cacheKey = urlKey ?? localKey
-            if thumbnail == nil {
+            if thumbnail == nil, track.source == .appleMusic {
                 cacheKey = localKey
                 if let image = self.cache.object(forKey: localKey) {
                     self.onChange?(image)
@@ -89,7 +89,7 @@ final class ArtworkService {
     }
 
     private nonisolated static func musicArtwork(for track: TrackInfo) -> Data? {
-        guard !NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Music").isEmpty else { return nil }
+        guard PlaybackMonitor.hasMusicAutomationAccess() else { return nil }
         let script = NSAppleScript(source: """
         with timeout of 3 seconds
             tell application id "com.apple.Music"

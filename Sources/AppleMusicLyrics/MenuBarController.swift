@@ -25,7 +25,7 @@ final class MenuBarController: NSObject {
     private let playerView = MenuPlayerView()
     private let playerFade = PanelFade()
     private var playerTrack: TrackInfo?
-    private var playerMessage = "打开音乐 App，开始播放"
+    private var playerMessage = "打开\(AppPreferences.playbackSource.title)，开始播放"
     private var playerArtwork: NSImage?
     private var playerArtworkNeedsUpdate = true
     private var latestTitle = LyricsTitle.text("♫ 歌词")
@@ -35,6 +35,7 @@ final class MenuBarController: NSObject {
     private var visibilityTimer: Timer?
     private var lineAdvanceTimer: Timer?
     private var screensAwake = true
+    private var statusWindowOccluded = false
     private var lastControlState: PlayerState?
     private var localDismissMonitor: Any?
     private var outsideDismissMonitor: Any?
@@ -124,7 +125,7 @@ final class MenuBarController: NSObject {
         if playerPanel.isVisible { updatePlayerArtwork() }
     }
 
-    private func updatePlayer(track: TrackInfo?, message: String = "打开音乐 App，开始播放") {
+    private func updatePlayer(track: TrackInfo?, message: String = "") {
         playerTrack = track
         playerMessage = message
         if playerPanel.isVisible { playerView.update(track: track, message: message) }
@@ -137,6 +138,7 @@ final class MenuBarController: NSObject {
     }
 
     func resetPlaybackClock() { karaokeTitleView.deactivate() }
+    func discardPendingSeek() { playerView.discardPendingSeek() }
 
     func updateKaraokeProgress(track: TrackInfo, lyrics: LyricsDocument) {
         updatePlayer(track: track)
@@ -150,14 +152,14 @@ final class MenuBarController: NSObject {
         case .showing(let track, let lyrics, _):
             updatePlayer(track: track)
             updateTitle(.synced(track, lyrics, sampledAt: CACurrentMediaTime()))
-        case .loadingLyrics(let track), .noLyrics(let track):
+        case .loadingLyrics(let track), .noLyrics(let track, _):
             updatePlayer(track: track)
             updateTitle(.text(track.title))
-        case .error:
-            updatePlayer(track: nil, message: "请检查设置中的诊断信息")
+        case .error(let message):
+            updatePlayer(track: nil, message: message)
             updateTitle(.text("音乐连接中断"))
         case .idle, .stopped, .musicNotRunning:
-            updatePlayer(track: nil)
+            updatePlayer(track: nil, message: "打开\(AppPreferences.playbackSource.title)，开始播放")
             updateTitle(.text("♫ 歌词"))
         }
     }
@@ -398,8 +400,8 @@ final class MenuBarController: NSObject {
         floatingLyricsVisible = visible
         updatePlaybackItems()
         scheduleAppearanceUpdate()
-        if visible { lineAdvanceTimer?.invalidate() }
-        else { displayLatestTitle() }
+        if visible { cancelLineAdvance() }
+        else { displayLatestTitle(preparingForReveal: true) }
 
         visibilityTimer?.invalidate()
         visibilityTimer = nil
@@ -443,7 +445,10 @@ final class MenuBarController: NSObject {
         // Clip at the left edge as the item contracts toward the playback controls.
         lyricButton.frame = NSRect(x: width - lyricsItemWidth, y: 0, width: lyricsItemWidth, height: height)
         karaokeTitleView.frame = lyricButton.bounds
-        if !statusItem.isVisible { statusItem.isVisible = true }
+        if !statusItem.isVisible {
+            statusItem.isVisible = true
+            refreshStatusRendering()
+        }
     }
 
     @objc private func screenParametersChanged() {
@@ -458,6 +463,7 @@ final class MenuBarController: NSObject {
 
     @objc private func statusWindowOcclusionChanged(_ notification: Notification) {
         guard let window = notification.object as? NSWindow, window === statusItem.button?.window else { return }
+        statusWindowOccluded = !window.occlusionState.contains(.visible)
         refreshStatusRendering()
     }
 
@@ -467,8 +473,13 @@ final class MenuBarController: NSObject {
     }
 
     private func refreshStatusRendering() {
-        karaokeTitleView.renderingVisible = statusLyricsVisible
-        if !floatingLyricsVisible { displayLatestTitle() }
+        let visible = statusLyricsVisible
+        karaokeTitleView.renderingVisible = visible
+        if visible, !floatingLyricsVisible {
+            displayLatestTitle()
+        } else if !visible {
+            cancelLineAdvance()
+        }
     }
 
     func reloadAppearance() {
@@ -498,20 +509,26 @@ final class MenuBarController: NSObject {
 
     private func updateTitle(_ title: LyricsTitle) {
         latestTitle = title
-        if !floatingLyricsVisible && AppPreferences.statusBarMode != .icon {
+        if screensAwake, !floatingLyricsVisible, AppPreferences.statusBarMode != .icon {
             displayLatestTitle()
         }
     }
 
-    private func displayLatestTitle() {
-        lineAdvanceTimer?.invalidate()
-        lineAdvanceTimer = nil
-        karaokeTitleView.renderingVisible = statusLyricsVisible
+    private func displayLatestTitle(preparingForReveal: Bool = false) {
+        let visible = statusLyricsVisible
+        karaokeTitleView.renderingVisible = visible
         if AppPreferences.statusBarMode == .icon {
+            cancelLineAdvance()
             karaokeTitleView.deactivate()
             karaokeTitleView.isHidden = true
             lyricButton.setSymbol("music.note", label: "打开播放器")
             statusItem.button?.setAccessibilityLabel("打开播放器")
+            return
+        }
+        // Render one sample before an explicit reveal. During installation of
+        // the status item, occlusion is unknown until AppKit reports it.
+        guard screensAwake, preparingForReveal || (statusItem.isVisible && (visible || !statusWindowOccluded)) else {
+            cancelLineAdvance()
             return
         }
         if lyricButton.image != nil {
@@ -520,26 +537,50 @@ final class MenuBarController: NSObject {
         }
         switch latestTitle {
         case .text(let text):
+            cancelLineAdvance()
             setTitle(text)
         case .synced(let track, let lyrics, let sampledAt):
-            let elapsed = track.state == .playing ? min(Self.lyricSampleHorizon, max(0, CACurrentMediaTime() - sampledAt)) : 0
-            let position = track.position + elapsed
+            let now = CACurrentMediaTime()
+            let origin = track.positionSampledAt ?? sampledAt
+            let elapsed = track.state == .playing ? min(Self.lyricSampleHorizon, max(0, now - origin)) : 0
+            let position = track.position + elapsed * track.positionRate
             let lineIndex = lyrics.lineIndex(at: position)
             if let lineIndex, !lyrics.lines[lineIndex].isGap {
-                setKaraokeTitle(line: lyrics.lines[lineIndex], position: position, isPlaying: track.state == .playing)
+                setKaraokeTitle(line: lyrics.lines[lineIndex], position: position, isPlaying: track.state == .playing,
+                                positionSampledAt: track.positionSampledAt.map { _ in now },
+                                positionRate: track.positionRate)
             } else {
                 setTitle(track.displayName)
             }
             let next = (lineIndex ?? -1) + 1
-            if track.state == .playing, statusLyricsVisible, lyrics.lines.indices.contains(next),
-               lyrics.lines[next].time - track.position <= Self.lyricSampleHorizon {
-                let timer = Timer(timeInterval: max(0.01, lyrics.lines[next].time - position), repeats: false) { [weak self] _ in
-                    self?.displayLatestTitle()
-                }
-                lineAdvanceTimer = timer
-                RunLoop.main.add(timer, forMode: .common)
+            if track.state == .playing, visible, lyrics.lines.indices.contains(next),
+               lyrics.lines[next].time - track.position <= Self.lyricSampleHorizon * track.positionRate {
+                let delay = (lyrics.lines[next].time - position) / track.positionRate
+                scheduleLineAdvance(after: delay)
+            } else {
+                cancelLineAdvance()
             }
         }
+    }
+
+    private func scheduleLineAdvance(after delay: TimeInterval) {
+        let fireDate = Date(timeIntervalSinceNow: max(0.01, delay))
+        if let timer = lineAdvanceTimer, timer.isValid {
+            if abs(timer.fireDate.timeIntervalSince(fireDate)) > 0.005 { timer.fireDate = fireDate }
+            return
+        }
+        let timer = Timer(fire: fireDate, interval: 0, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            self.lineAdvanceTimer = nil
+            self.displayLatestTitle()
+        }
+        lineAdvanceTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func cancelLineAdvance() {
+        lineAdvanceTimer?.invalidate()
+        lineAdvanceTimer = nil
     }
 
     private func setTitle(_ title: String) {
@@ -549,13 +590,15 @@ final class MenuBarController: NSObject {
         statusItem.button?.setAccessibilityLabel("打开播放器，" + title)
     }
 
-    private func setKaraokeTitle(line: LyricLine, position: TimeInterval, isPlaying: Bool) {
+    private func setKaraokeTitle(line: LyricLine, position: TimeInterval, isPlaying: Bool,
+                                  positionSampledAt: CFTimeInterval?, positionRate: Double) {
         if !lyricButton.title.isEmpty { lyricButton.title = "" }
         let label = "打开播放器，" + line.text
         if let button = statusItem.button, button.accessibilityLabel() != label {
             button.setAccessibilityLabel(label)
         }
-        karaokeTitleView.update(line: line, position: position, isPlaying: isPlaying)
+        karaokeTitleView.update(line: line, position: position, isPlaying: isPlaying,
+                                positionSampledAt: positionSampledAt, positionRate: positionRate)
         karaokeTitleView.isHidden = false
     }
 
@@ -786,9 +829,9 @@ private final class MenuPlayerView: NSView {
             view.addGestureRecognizer(
                 NSClickGestureRecognizer(target: self, action: #selector(openMusic))
             )
-            view.toolTip = "打开 Apple Music"
+            view.toolTip = "打开所选播放器"
             view.setAccessibilityRole(.button)
-            view.setAccessibilityLabel("打开 Apple Music")
+            view.setAccessibilityLabel("打开所选播放器")
         }
 
         slider.translatesAutoresizingMaskIntoConstraints = false
@@ -857,9 +900,10 @@ private final class MenuPlayerView: NSView {
         updateProgress()
 
         guard let track else {
-            if previousTrack != nil { titleLabel.stringValue = "播放器" }
+            titleLabel.stringValue = AppPreferences.playbackSource.title
             let subtitle = message ?? "未播放歌曲"
             if subtitleLabel.stringValue != subtitle { subtitleLabel.stringValue = subtitle }
+            subtitleLabel.toolTip = subtitle
             return
         }
 
@@ -873,6 +917,7 @@ private final class MenuPlayerView: NSView {
         } else {
             subtitleLabel.stringValue = "\(track.artist) · \(track.album)"
         }
+        subtitleLabel.toolTip = subtitleLabel.stringValue
     }
 
     private func updateProgress() {
@@ -887,7 +932,7 @@ private final class MenuPlayerView: NSView {
                 position = pendingSeek.position
             }
         }
-        let enabled = duration > 0
+        let enabled = duration > 0 && currentTrack?.canSeek == true
         if slider.isEnabled != enabled { slider.isEnabled = enabled }
         if slider.maxValue != max(1, duration) { slider.maxValue = max(1, duration) }
         if slider.doubleValue != position { slider.doubleValue = position }
@@ -956,12 +1001,17 @@ private final class MenuPlayerView: NSView {
 
     func resetProgressHover() { slider.resetHover() }
 
+    func discardPendingSeek() {
+        pendingSeek = nil
+        updateProgress()
+    }
+
     @objc private func openMusic(_ sender: Any?) {
         onOpenMusic?()
     }
 
     @objc private func seek(_ sender: MenuProgressSlider) {
-        guard sender.canSeekCurrentTrack, let track = currentTrack, track.duration > 0 else { return }
+        guard sender.canSeekCurrentTrack, let track = currentTrack, track.canSeek, track.duration > 0 else { return }
         let target = min(track.duration, max(0, sender.doubleValue))
         updateTimeLabels(position: target, duration: track.duration)
         guard !sender.isTracking, let onSeek else { return }
@@ -1030,6 +1080,22 @@ private final class KaraokeStatusTitleView: NSView {
         }
     }
 
+    private struct MonotonicBounds {
+        let hasBase: Bool
+        let baseMinX: CGFloat
+        let baseMaxX: CGFloat
+        let hasSung: Bool
+        let sungMaxX: CGFloat
+    }
+
+    private struct DrawnFrameKey: Equatable {
+        let originPx: Int
+        let sungPx: Int
+        let alphaBucket: Int
+        let lineID: String?
+        let nonMonotonic: Bool
+    }
+
     private static let lineTransitionDuration: CFTimeInterval = 0.16
     private let font = NSFont.menuBarFont(ofSize: 0)
     private var displayText = ""
@@ -1038,9 +1104,11 @@ private final class KaraokeStatusTitleView: NSView {
     private var isMonotonicLTR = false
     private var animationEnd: TimeInterval = -.infinity
     private var basePosition: TimeInterval = 0
+    private var positionRate = 1.0
     private var sampledAt: CFTimeInterval = 0
     private var isPlaying = false
     private var displayTimer: Timer?
+    private var wordWakeTimer: Timer?
     private var currentLineID: String?
     private var renderedOriginX: CGFloat?
     private var lastDrawTime: CFTimeInterval = 0
@@ -1051,6 +1119,7 @@ private final class KaraokeStatusTitleView: NSView {
     private var lineInk: [String: LineInk] = [:]
     private var inkScale: CGFloat = 0
     private var inkUsesHighContrast = false
+    private var lastDrawnKey: DrawnFrameKey?
 
     override var isFlipped: Bool { true }
 
@@ -1060,10 +1129,12 @@ private final class KaraokeStatusTitleView: NSView {
 
     deinit {
         displayTimer?.invalidate()
+        wordWakeTimer?.invalidate()
     }
 
-    func update(line: LyricLine, position: TimeInterval, isPlaying: Bool) {
-        let now = CACurrentMediaTime()
+    func update(line: LyricLine, position: TimeInterval, isPlaying: Bool,
+                positionSampledAt: CFTimeInterval? = nil, positionRate: Double = 1) {
+        let now = positionSampledAt ?? CACurrentMediaTime()
         let estimated = interpolatedPosition(at: now)
         let lineChanged = renderedLine != line
         let playbackChanged = self.isPlaying != isPlaying
@@ -1080,13 +1151,14 @@ private final class KaraokeStatusTitleView: NSView {
             lastDrawTime = now
         }
         let error = position - estimated
-        if self.isPlaying, isPlaying, abs(error) < 0.75 {
+        if positionSampledAt == nil, self.isPlaying, isPlaying, abs(error) < 0.75 {
             // Small sample corrections should not become visible motion.
             basePosition = estimated + error * 0.06
         } else {
             basePosition = position
         }
         sampledAt = now
+        self.positionRate = positionRate
         self.isPlaying = isPlaying
 
         if lineChanged {
@@ -1120,18 +1192,21 @@ private final class KaraokeStatusTitleView: NSView {
         renderedOriginX = nil
         lineTransitionStartedAt = nil
         lineInk.removeAll()
+        lastDrawnKey = nil
     }
 
     func reloadColors() {
         activeColor = AppPreferences.menuBarLyricsActiveColor
         inactiveColor = AppPreferences.menuBarLyricsInactiveColor
         lineInk.removeAll()
+        lastDrawnKey = nil
         needsDisplay = true
     }
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         lineInk.removeAll()
+        lastDrawnKey = nil
         needsDisplay = true
     }
 
@@ -1139,13 +1214,17 @@ private final class KaraokeStatusTitleView: NSView {
         super.draw(dirtyRect)
         NSColor.clear.setFill()
         dirtyRect.fill(using: .copy)
-        guard !displayText.isEmpty else { return }
+        guard !displayText.isEmpty else {
+            lastDrawnKey = nil
+            return
+        }
         let scale = window?.backingScaleFactor ?? 2
         let highContrast = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
         if scale != inkScale || highContrast != inkUsesHighContrast {
             inkScale = scale
             inkUsesHighContrast = highContrast
             lineInk.removeAll()
+            lastDrawnKey = nil
         }
 
         let now = CACurrentMediaTime()
@@ -1155,8 +1234,9 @@ private final class KaraokeStatusTitleView: NSView {
             position: position,
             segments: segments
         )
+        let originX = smoothedOrigin(target: targetOriginX, at: now)
         let origin = NSPoint(
-            x: smoothedOrigin(target: targetOriginX, at: now),
+            x: originX,
             y: floor((bounds.height - displaySize.height) / 2)
         )
 
@@ -1166,12 +1246,21 @@ private final class KaraokeStatusTitleView: NSView {
             alpha = 1 - 0.4 * (1 - progress) * (1 - progress)
             if progress == 1 { lineTransitionStartedAt = nil }
         }
+        let monotonicBounds = isMonotonicLTR ? monotonicBounds(at: position, originX: originX) : nil
+        lastDrawnKey = drawnKey(
+            originX: originX,
+            alpha: alpha,
+            scale: scale,
+            position: position,
+            monotonicBounds: monotonicBounds
+        )
         drawLine(
             text: displayText,
             segments: segments,
             position: position,
             origin: origin,
-            alpha: alpha
+            alpha: alpha,
+            monotonicBounds: monotonicBounds
         )
         if !needsAnimatedRefresh(at: now) { stopTimer() }
     }
@@ -1181,7 +1270,8 @@ private final class KaraokeStatusTitleView: NSView {
         segments: [Segment],
         position: TimeInterval,
         origin: NSPoint,
-        alpha: CGFloat
+        alpha: CGFloat,
+        monotonicBounds: MonotonicBounds? = nil
     ) {
         guard alpha > 0, let context = NSGraphicsContext.current?.cgContext else { return }
 
@@ -1195,49 +1285,14 @@ private final class KaraokeStatusTitleView: NSView {
             return
         }
 
-        if isMonotonicLTR {
-            var baseMinX = CGFloat.greatestFiniteMagnitude
-            var baseMaxX = -CGFloat.greatestFiniteMagnitude
-            var sungMaxX = -CGFloat.greatestFiniteMagnitude
-            var hasBase = false
-            var hasSung = false
-
-            for segment in segments {
-                if segment.glyphs.isEmpty {
-                    let x = origin.x + segment.offset
-                    guard segment.width > 0, x + segment.width >= 0, x <= bounds.width else { continue }
-                    hasBase = true
-                    baseMinX = min(baseMinX, x)
-                    baseMaxX = max(baseMaxX, x + segment.width)
-                    if position > segment.start {
-                        let duration = max(0.01, segment.end - segment.start)
-                        let fraction = min(1, max(0, (position - segment.start) / duration))
-                        if fraction > 0 {
-                            hasSung = true
-                            sungMaxX = max(sungMaxX, x + segment.width * fraction)
-                        }
-                    }
-                    continue
-                }
-                for glyph in segment.glyphs {
-                    let x = origin.x + glyph.offset
-                    guard glyph.width > 0, x + glyph.width >= 0, x <= bounds.width else { continue }
-                    hasBase = true
-                    baseMinX = min(baseMinX, x)
-                    baseMaxX = max(baseMaxX, x + glyph.width)
-                    if position > glyph.start {
-                        let duration = max(0.01, glyph.end - glyph.start)
-                        let fraction = min(1, max(0, (position - glyph.start) / duration))
-                        if fraction > 0 {
-                            hasSung = true
-                            sungMaxX = max(sungMaxX, x + glyph.width * fraction)
-                        }
-                    }
-                }
-            }
-            if hasBase {
-                let baseRect = CGRect(x: baseMinX, y: origin.y, width: max(0, baseMaxX - baseMinX), height: bounds.height)
-                    .intersection(bounds)
+        if let boundsInfo = monotonicBounds ?? (isMonotonicLTR ? self.monotonicBounds(at: position, originX: origin.x) : nil) {
+            if boundsInfo.hasBase {
+                let baseRect = CGRect(
+                    x: boundsInfo.baseMinX,
+                    y: origin.y,
+                    width: max(0, boundsInfo.baseMaxX - boundsInfo.baseMinX),
+                    height: bounds.height
+                ).intersection(bounds)
                 if !baseRect.isEmpty {
                     context.saveGState()
                     context.clip(to: baseRect)
@@ -1245,9 +1300,13 @@ private final class KaraokeStatusTitleView: NSView {
                     context.restoreGState()
                 }
             }
-            if hasSung {
-                let sungRect = CGRect(x: baseMinX, y: origin.y, width: max(0, sungMaxX - baseMinX), height: bounds.height)
-                    .intersection(bounds)
+            if boundsInfo.hasSung {
+                let sungRect = CGRect(
+                    x: boundsInfo.baseMinX,
+                    y: origin.y,
+                    width: max(0, boundsInfo.sungMaxX - boundsInfo.baseMinX),
+                    height: bounds.height
+                ).intersection(bounds)
                 if !sungRect.isEmpty {
                     context.clip(to: sungRect)
                     ink.draw(at: origin, highlighted: true, in: context)
@@ -1374,26 +1433,28 @@ private final class KaraokeStatusTitleView: NSView {
         return floor(min(padding, max(minimum, desired)))
     }
 
-    private func smoothedOrigin(target: CGFloat, at now: CFTimeInterval) -> CGFloat {
+    private func computeSmoothedOrigin(target: CGFloat, at now: CFTimeInterval) -> CGFloat {
         if !AppPreferences.smoothScrolling || !isPlaying {
-            renderedOriginX = target
             return target
         }
         guard let renderedOriginX else {
-            self.renderedOriginX = target
-            lastDrawTime = now
             return target
         }
         let elapsed = min(0.05, max(1.0 / 240.0, now - lastDrawTime))
         let blend = 1 - exp(-elapsed / 0.09)
         let interpolated = renderedOriginX + (target - renderedOriginX) * blend
-        let next = abs(interpolated - target) <= 0.1 ? target : interpolated
-        self.renderedOriginX = next
+        return abs(interpolated - target) <= 0.1 ? target : interpolated
+    }
+
+    private func smoothedOrigin(target: CGFloat, at now: CFTimeInterval) -> CGFloat {
+        let next = computeSmoothedOrigin(target: target, at: now)
+        renderedOriginX = next
         lastDrawTime = now
         return next
     }
 
     private func rebuildDisplay(line: LyricLine) {
+        lastDrawnKey = nil
         let result = NSMutableString()
         var rebuilt: [Segment] = []
         for word in line.words {
@@ -1513,12 +1574,181 @@ private final class KaraokeStatusTitleView: NSView {
         )
     }
 
+    private func monotonicBounds(at position: TimeInterval, originX: CGFloat) -> MonotonicBounds {
+        var baseMinX = CGFloat.greatestFiniteMagnitude
+        var baseMaxX = -CGFloat.greatestFiniteMagnitude
+        var sungMaxX = -CGFloat.greatestFiniteMagnitude
+        var hasBase = false
+        var hasSung = false
+
+        for segment in segments {
+            if segment.glyphs.isEmpty {
+                let x = originX + segment.offset
+                guard segment.width > 0, x + segment.width >= 0, x <= bounds.width else { continue }
+                hasBase = true
+                baseMinX = min(baseMinX, x)
+                baseMaxX = max(baseMaxX, x + segment.width)
+                if position > segment.start {
+                    let duration = max(0.01, segment.end - segment.start)
+                    let fraction = min(1, max(0, (position - segment.start) / duration))
+                    if fraction > 0 {
+                        hasSung = true
+                        sungMaxX = max(sungMaxX, x + segment.width * fraction)
+                    }
+                }
+                continue
+            }
+            for glyph in segment.glyphs {
+                let x = originX + glyph.offset
+                guard glyph.width > 0, x + glyph.width >= 0, x <= bounds.width else { continue }
+                hasBase = true
+                baseMinX = min(baseMinX, x)
+                baseMaxX = max(baseMaxX, x + glyph.width)
+                if position > glyph.start {
+                    let duration = max(0.01, glyph.end - glyph.start)
+                    let fraction = min(1, max(0, (position - glyph.start) / duration))
+                    if fraction > 0 {
+                        hasSung = true
+                        sungMaxX = max(sungMaxX, x + glyph.width * fraction)
+                    }
+                }
+            }
+        }
+        return MonotonicBounds(
+            hasBase: hasBase,
+            baseMinX: baseMinX,
+            baseMaxX: baseMaxX,
+            hasSung: hasSung,
+            sungMaxX: sungMaxX
+        )
+    }
+
+    private func drawnKey(
+        originX: CGFloat,
+        alpha: CGFloat,
+        scale: CGFloat,
+        position: TimeInterval,
+        monotonicBounds: MonotonicBounds?
+    ) -> DrawnFrameKey {
+        let originPx = Int((originX * scale).rounded())
+        let alphaBucket = Int((alpha * 100).rounded())
+        let sungPx: Int
+        if let monotonicBounds {
+            sungPx = monotonicBounds.hasSung ? Int((monotonicBounds.sungMaxX * scale).rounded()) : Int.min
+        } else if !segments.contains(where: { !$0.glyphs.isEmpty }) {
+            sungPx = Int.min
+        } else {
+            return DrawnFrameKey(
+                originPx: originPx,
+                sungPx: Int((position * 60).rounded()),
+                alphaBucket: alphaBucket,
+                lineID: currentLineID,
+                nonMonotonic: true
+            )
+        }
+        return DrawnFrameKey(
+            originPx: originPx,
+            sungPx: sungPx,
+            alphaBucket: alphaBucket,
+            lineID: currentLineID,
+            nonMonotonic: false
+        )
+    }
+
+    private func hasActiveWord(at position: TimeInterval) -> Bool {
+        for segment in segments {
+            if segment.glyphs.isEmpty {
+                if segment.width > 0, position >= segment.start, position < segment.end { return true }
+            } else {
+                for glyph in segment.glyphs where glyph.width > 0 {
+                    if position >= glyph.start, position < glyph.end { return true }
+                }
+            }
+        }
+        return false
+    }
+
+    private func nextWordStart(after position: TimeInterval) -> TimeInterval? {
+        var next: TimeInterval?
+        for segment in segments {
+            if segment.glyphs.isEmpty {
+                if segment.width > 0, segment.start > position {
+                    next = next.map { min($0, segment.start) } ?? segment.start
+                }
+            } else {
+                for glyph in segment.glyphs where glyph.width > 0 && glyph.start > position {
+                    next = next.map { min($0, glyph.start) } ?? glyph.start
+                }
+            }
+        }
+        return next
+    }
+
+    private func tickDisplayTimer() {
+        let now = CACurrentMediaTime()
+        let position = interpolatedPosition(at: now)
+        guard needsAnimatedRefresh(at: now) else {
+            stopTimer()
+            needsDisplay = true
+            return
+        }
+
+        let targetOriginX = horizontalOrigin(
+            textWidth: displaySize.width,
+            position: position,
+            segments: segments
+        )
+        let nextOriginX = computeSmoothedOrigin(target: targetOriginX, at: now)
+        let alpha: CGFloat
+        if let startedAt = lineTransitionStartedAt {
+            let progress = min(1, max(0, (now - startedAt) / Self.lineTransitionDuration))
+            alpha = 1 - 0.4 * (1 - progress) * (1 - progress)
+        } else {
+            alpha = 1
+        }
+        let scale = window?.backingScaleFactor ?? 2
+        let monotonic = isMonotonicLTR ? monotonicBounds(at: position, originX: nextOriginX) : nil
+        let key = drawnKey(
+            originX: nextOriginX,
+            alpha: alpha,
+            scale: scale,
+            position: position,
+            monotonicBounds: monotonic
+        )
+        if key != lastDrawnKey {
+            needsDisplay = true
+            return
+        }
+
+        if lineTransitionStartedAt == nil,
+           abs(nextOriginX - targetOriginX) <= 0.1,
+           !hasActiveWord(at: position),
+           let wakeAt = nextWordStart(after: position) {
+            let delay = max(0.01, (wakeAt - position) / max(0.25, positionRate))
+            displayTimer?.invalidate()
+            displayTimer = nil
+            wordWakeTimer?.invalidate()
+            let wakeTimer = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
+                guard let self else { return }
+                self.wordWakeTimer = nil
+                self.activateTimer()
+                self.tickDisplayTimer()
+            }
+            wakeTimer.tolerance = min(0.02, delay * 0.1)
+            wordWakeTimer = wakeTimer
+            RunLoop.main.add(wakeTimer, forMode: .common)
+        }
+    }
+
     private func activateTimer() {
         guard renderingVisible, displayTimer == nil else { return }
-        let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
-            self?.needsDisplay = true
+        wordWakeTimer?.invalidate()
+        wordWakeTimer = nil
+        let interval = ProcessInfo.processInfo.isLowPowerModeEnabled ? 1.0 / 20.0 : 1.0 / 30.0
+        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
+            self?.tickDisplayTimer()
         }
-        timer.tolerance = 0.008
+        timer.tolerance = 0.01
         displayTimer = timer
         RunLoop.main.add(timer, forMode: .common)
     }
@@ -1526,9 +1756,11 @@ private final class KaraokeStatusTitleView: NSView {
     private func stopTimer() {
         displayTimer?.invalidate()
         displayTimer = nil
+        wordWakeTimer?.invalidate()
+        wordWakeTimer = nil
     }
 
     private func interpolatedPosition(at now: CFTimeInterval) -> TimeInterval {
-        basePosition + (isPlaying ? max(0, now - sampledAt) : 0)
+        basePosition + (isPlaying ? max(0, now - sampledAt) * positionRate : 0)
     }
 }

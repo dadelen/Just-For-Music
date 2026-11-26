@@ -216,10 +216,11 @@ enum AppleTTMLParser {
             }
             let confirmedEnd = line.end ?? (words.allSatisfy { $0.explicitEnd != nil }
                 ? words.compactMap(\.explicitEnd).max() : nil)
-            if harmonies.isEmpty, !role.isHarmony, let split = trailingHarmony(in: words) {
-                if split.lead.isEmpty {
+            if harmonies.isEmpty, !role.isHarmony {
+                let text = words.map(\.text).joined()
+                if LyricLine.isParenthesizedVocal(text) {
                     role = role.harmonyRole
-                } else if let start = split.harmony.first?.start {
+                } else if let split = trailingHarmony(in: words, text: text), let start = split.harmony.first?.start {
                     words = split.lead
                     harmonies = [LyricHarmony(time: start, words: lyricWords(split.harmony))]
                 }
@@ -300,27 +301,9 @@ enum AppleTTMLParser {
         return result
     }
 
-    private static func trailingHarmony(in words: [MutableWord]) -> (lead: [MutableWord], harmony: [MutableWord])? {
-        guard let last = words.last?.text.last, last == ")" || last == "）" else { return nil }
-        let text = words.map(\.text).joined()
-        let closing: [Character: Character] = [")": "(", "）": "（"]
-        var expected: [Character] = []
-        var boundary: String.Index?
-        for index in text.indices.reversed() {
-            let character = text[index]
-            if let opener = closing[character] {
-                expected.append(opener)
-            } else if let opener = expected.last {
-                if character == "(" || character == "（" {
-                    guard character == opener else { break }
-                    expected.removeLast()
-                    if expected.isEmpty { boundary = index }
-                }
-            } else if !character.isWhitespace {
-                break
-            }
-        }
-        guard let boundary, text[boundary...].contains(where: \.isLetter) else { return nil }
+    private static func trailingHarmony(in words: [MutableWord], text: String) -> (lead: [MutableWord], harmony: [MutableWord])? {
+        guard let boundary = LyricLine.trailingParenthesizedVocalStart(in: text),
+              text[..<boundary].contains(where: \.isLetter) else { return nil }
         let offset = boundary.utf16Offset(in: text)
         var lead: [MutableWord] = []
         var harmony: [MutableWord] = []

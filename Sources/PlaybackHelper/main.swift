@@ -1,4 +1,5 @@
 import AppKit
+import CoreServices
 import Foundation
 
 #if !arch(arm64)
@@ -19,6 +20,7 @@ private struct Response: Codable {
 }
 
 private let delimiter = "\u{1F}"
+private let musicBundleIdentifier = "com.apple.Music"
 private let script = NSAppleScript(source: """
     property previousTrackKey : missing value
     property cachedTitle : ""
@@ -59,6 +61,27 @@ private let script = NSAppleScript(source: """
     """)
 private let encoder = JSONEncoder()
 private var controlScripts: [String: NSAppleScript] = [:]
+
+private func automationStatus(askUserIfNeeded: Bool) -> OSStatus {
+    guard NSRunningApplication.runningApplications(withBundleIdentifier: musicBundleIdentifier)
+        .contains(where: { !$0.isTerminated }) else { return OSStatus(procNotFound) }
+    let target = NSAppleEventDescriptor(bundleIdentifier: musicBundleIdentifier)
+    guard let address = target.aeDesc else { return OSStatus(errAEWrongDataType) }
+    return withExtendedLifetime(target) {
+        AEDeterminePermissionToAutomateTarget(
+            address, AEEventClass(typeWildCard), AEEventID(typeWildCard), askUserIfNeeded
+        )
+    }
+}
+
+private func unavailableResponse(for status: OSStatus) -> Response {
+    let notRunning = status == OSStatus(procNotFound)
+    return Response(
+        kind: notRunning ? "musicNotRunning" : "error",
+        title: nil, artist: nil, album: nil, duration: nil, position: nil, state: nil,
+        error: notRunning ? nil : "Music automation authorization failed (\(status))."
+    )
+}
 
 private func sample() -> Response {
     guard let script else {
@@ -131,8 +154,6 @@ private func control(_ arguments: [String]) -> String? {
     case "next" where arguments.count == 1: command = "next track"
     case "play" where arguments.count == 1: command = "play"
     case "pause" where arguments.count == 1: command = "pause"
-    case "cue-previous" where arguments.count == 1: command = cueTrack("previous track")
-    case "cue-next" where arguments.count == 1: command = cueTrack("next track")
     case "seek" where arguments.count == 2:
         guard let seconds = TimeInterval(arguments[1]), seconds.isFinite, seconds >= 0 else { return "Invalid seek position" }
         command = "set player position to \(seconds)"
@@ -153,24 +174,24 @@ private func control(_ arguments: [String]) -> String? {
     return errorInfo.map { $0[NSAppleScript.errorMessage] as? String ?? "Unable to control Music" }
 }
 
-private func cueTrack(_ direction: String) -> String {
-    """
-    pause
-    \(direction)
-    pause
-    """
-}
-
-if CommandLine.arguments.dropFirst().first == "--control" {
-    if let error = control(Array(CommandLine.arguments.dropFirst(2))) {
-        FileHandle.standardError.write(Data(error.utf8))
-        exit(1)
-    }
-    exit(0)
+if CommandLine.arguments.dropFirst().first == "--authorize" {
+    let status = automationStatus(askUserIfNeeded: true)
+    if status != noErr { FileHandle.standardError.write(Data("\(status)\n".utf8)) }
+    exit(status == noErr ? 0 : 1)
 }
 
 while let line = readLine() {
     autoreleasepool {
+        let status = automationStatus(askUserIfNeeded: false)
+        guard status == noErr else {
+            var response = unavailableResponse(for: status)
+            if line != "sample" {
+                let message = response.error ?? "Music is not running."
+                response.controlErrors = line.components(separatedBy: "\t").map { _ in message }
+            }
+            write(response)
+            return
+        }
         if line == "sample" {
             write(sample())
         } else {

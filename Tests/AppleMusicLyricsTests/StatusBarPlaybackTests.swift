@@ -105,8 +105,44 @@ final class StatusBarPlaybackTests: XCTestCase {
 
         controller.updateKaraokeProgress(track: track, lyrics: lyrics)
         XCTAssertEqual(button.accessibilityLabel(), "打开播放器，Song — Artist")
+        let advanceTimer = try XCTUnwrap(Mirror(reflecting: controller).descendant("lineAdvanceTimer") as? Timer)
+        controller.updateKaraokeProgress(track: track, lyrics: lyrics)
+        XCTAssertTrue(advanceTimer === (Mirror(reflecting: controller).descendant("lineAdvanceTimer") as? Timer))
         try await Task.sleep(nanoseconds: 300_000_000)
         XCTAssertEqual(button.accessibilityLabel(), "打开播放器，First lyric")
+    }
+
+    func testSleepingStatusItemRefreshesFromTheLatestSampleWhenRevealed() throws {
+        _ = NSApplication.shared
+        let originalMode = AppPreferences.statusBarMode
+        defer { AppPreferences.statusBarMode = originalMode }
+        AppPreferences.statusBarMode = .automatic
+        let controller = MenuBarController(floatingLyricsVisible: true)
+        let item = try XCTUnwrap(Mirror(reflecting: controller).descendant("statusItem") as? NSStatusItem)
+        let button = try XCTUnwrap(item.button)
+        let lines = [LyricLine(time: 0, text: "First lyric"), LyricLine(time: 5, text: "Second lyric")]
+        let lyrics = LyricsDocument(lines: lines, plainText: nil, source: "test", isSynced: true, wordTiming: .none)
+        func update(at position: TimeInterval) {
+            let track = TrackInfo(title: "Song", artist: "Artist", album: "", duration: 30,
+                                  position: position, state: .paused)
+            controller.updateKaraokeProgress(track: track, lyrics: lyrics)
+        }
+        update(at: 0)
+        controller.setFloatingLyricsVisible(false, animated: false)
+        XCTAssertEqual(button.accessibilityLabel(), "打开播放器，First lyric")
+
+        let powerChange = NSSelectorFromString("screenPowerChanged:")
+        _ = controller.perform(powerChange, with: Notification(name: NSWorkspace.screensDidSleepNotification))
+        update(at: 6)
+        XCTAssertEqual(button.accessibilityLabel(), "打开播放器，First lyric")
+
+        _ = controller.perform(powerChange, with: Notification(name: NSWorkspace.screensDidWakeNotification))
+        if button.window?.isVisible != true || button.window?.occlusionState.contains(.visible) != true {
+            // Test runs without a visible status item can still exercise the reveal path.
+            controller.setFloatingLyricsVisible(true, animated: false)
+            controller.setFloatingLyricsVisible(false, animated: false)
+        }
+        XCTAssertEqual(button.accessibilityLabel(), "打开播放器，Second lyric")
     }
 
     func testProgressKeepsNewestSeekWhileMusicReportsOldPositions() throws {
@@ -178,6 +214,35 @@ final class StatusBarPlaybackTests: XCTestCase {
         XCTAssertEqual(seeks, [35, 80, 100, 45])
         XCTAssertEqual(slider.doubleValue, 2)
         trackingCell.onTrack = nil
+    }
+
+    func testNetEaseSeekReflectsClientCapabilityAndRestoresActualPositionOnFailure() throws {
+        let app = NSApplication.shared
+        let controller = MenuBarController()
+        let fields = Mirror(reflecting: controller).children
+        let player = try XCTUnwrap(fields.first { $0.label == "playerView" }?.value as? NSView)
+        let panel = try XCTUnwrap(fields.first { $0.label == "playerPanel" }?.value as? NSPanel)
+        panel.orderFrontRegardless()
+        defer { panel.orderOut(nil) }
+        let slider = try XCTUnwrap(player.subviews.compactMap { $0 as? NSSlider }.first)
+        func update(canSeek: Bool) {
+            controller.apply(status: .noLyrics(TrackInfo(
+                title: "Demo", artist: "A", album: "", duration: 100, position: 15,
+                state: .paused, source: .netease, canSeek: canSeek
+            )))
+        }
+        var requests: [Double] = []
+        controller.onSeek = { requests.append($0) }
+        update(canSeek: false)
+        XCTAssertFalse(slider.isEnabled)
+        XCTAssertEqual(slider.doubleValue, 15)
+        update(canSeek: true)
+        XCTAssertTrue(slider.isEnabled)
+        slider.doubleValue = 40
+        XCTAssertTrue(app.sendAction(try XCTUnwrap(slider.action), to: slider.target, from: slider))
+        XCTAssertEqual(requests, [40])
+        controller.discardPendingSeek()
+        XCTAssertEqual(slider.doubleValue, 15)
     }
 
     func testStaticLyricsDoNotRequestRepeatedStatusBarRedraws() throws {

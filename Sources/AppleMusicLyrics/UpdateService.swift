@@ -283,10 +283,6 @@ private struct GitHubReleaseAsset: Decodable {
 }
 
 private extension String {
-    func trimmingPrefix(_ prefix: Character) -> String {
-        first == prefix ? String(dropFirst()) : self
-    }
-
     func trimmingPrefix(_ prefix: String) -> String {
         hasPrefix(prefix) ? String(dropFirst(prefix.count)) : self
     }

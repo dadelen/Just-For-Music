@@ -5,9 +5,22 @@ import SQLite3
 /// Reads the catalog responses already downloaded by Music.app. This provider
 /// never uses Apple account credentials and never makes a network request.
 final class AppleMusicCacheLyricsProvider: @unchecked Sendable {
+    enum CacheAccess: Equatable, Sendable {
+        case readable
+        case missing
+        case denied
+    }
+
+    struct CacheRevision: Equatable {
+        let databaseModified: Date?
+        let journalModified: Date?
+        let bodiesModified: Date?
+    }
+
     private let fileManager: FileManager
     private let cacheDirectory: URL
     private let databaseURL: URL
+    private let journalURL: URL
     private let preferredLanguages: [String]
     private struct DirectoryMiss: Sendable {
         let modified: Date?
@@ -32,13 +45,52 @@ final class AppleMusicCacheLyricsProvider: @unchecked Sendable {
                 .appendingPathComponent("Library/Caches/com.apple.Music", isDirectory: true)
         self.cacheDirectory = root.appendingPathComponent("fsCachedData", isDirectory: true)
         self.databaseURL = root.appendingPathComponent("Cache.db")
+        self.journalURL = root.appendingPathComponent("Cache.db-wal")
         self.decodedResponses.countLimit = 256
+    }
+
+    func cacheAccess() -> CacheAccess {
+        // A metadata check can succeed even when the system rejects opening the file.
+        var indexDenied = false
+        do {
+            let handle = try FileHandle(forReadingFrom: databaseURL)
+            try? handle.close()
+            return .readable
+        } catch {
+            indexDenied = Self.isPermissionError(error as NSError)
+        }
+
+        do {
+            _ = try fileManager.contentsOfDirectory(atPath: cacheDirectory.path)
+            return .readable
+        } catch {
+            return indexDenied || Self.isPermissionError(error as NSError) ? .denied : .missing
+        }
+    }
+
+    private static func isPermissionError(_ error: NSError) -> Bool {
+        if error.domain == NSCocoaErrorDomain, error.code == CocoaError.Code.fileReadNoPermission.rawValue {
+            return true
+        }
+        if error.domain == NSPOSIXErrorDomain,
+           error.code == Int(POSIXErrorCode.EPERM.rawValue) || error.code == Int(POSIXErrorCode.EACCES.rawValue) {
+            return true
+        }
+        return (error.userInfo[NSUnderlyingErrorKey] as? NSError).map(isPermissionError) ?? false
+    }
+
+    func cacheRevision() -> CacheRevision {
+        func modified(_ url: URL) -> Date? {
+            (try? fileManager.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
+        }
+        return CacheRevision(databaseModified: modified(databaseURL), journalModified: modified(journalURL),
+                             bodiesModified: modified(cacheDirectory))
     }
 
     func lyrics(for track: TrackInfo, recentIndexOnly: Bool = false,
                 bypassDirectoryCooldown: Bool = false,
                 isCancelled: () -> Bool = { Task.isCancelled }) -> LyricsDocument {
-        guard !isCancelled() else { return .empty }
+        guard track.source == .appleMusic, !isCancelled() else { return .empty }
         let started = ProcessInfo.processInfo.systemUptime
         logger.info("Lyrics lookup started; track=\(track.displayName); recentIndexOnly=\(recentIndexOnly)")
         let indexed = indexedCandidates(limit: recentIndexOnly ? 24 : maximumCandidates, isCancelled: isCancelled)
@@ -62,7 +114,7 @@ final class AppleMusicCacheLyricsProvider: @unchecked Sendable {
                        let cached = decodedResponses.object(forKey: key),
                        cached.modifiedDate == modDate {
                         response = cached.response
-                    } else if let data = candidate.data(),
+                    } else if let data = try? Data(contentsOf: url, options: .mappedIfSafe),
                               let decoded = try? decoder.decode(CatalogResponse.self, from: data) {
                         decodedResponses.setObject(CatalogResponseBox(decoded, modifiedDate: modDate), forKey: key)
                         response = decoded
@@ -178,12 +230,19 @@ final class AppleMusicCacheLyricsProvider: @unchecked Sendable {
     private func directoryCandidates(excluding indexedPaths: Set<URL>) -> [CacheCandidate] {
         // The database may contain stale paths after a Music or macOS update.
         let keys: Set<URLResourceKey> = [.contentModificationDateKey, .isRegularFileKey]
-        guard let urls = try? fileManager.contentsOfDirectory(
-            at: cacheDirectory,
-            includingPropertiesForKeys: Array(keys),
-            options: [.skipsHiddenFiles]
-        ) else {
-            logger.warning("Cache data directory is unavailable; path=\(cacheDirectory.path)")
+        let urls: [URL]
+        do {
+            urls = try fileManager.contentsOfDirectory(
+                at: cacheDirectory,
+                includingPropertiesForKeys: Array(keys),
+                options: [.skipsHiddenFiles]
+            )
+        } catch {
+            let fileError = error as NSError
+            let underlying = fileError.userInfo[NSUnderlyingErrorKey] as? NSError
+            let reason = "\(fileError.domain) (\(fileError.code))"
+            let detail = underlying.map { "; underlying=\($0.domain) (\($0.code))" } ?? ""
+            logger.warning("Cache data directory is unavailable; path=\(cacheDirectory.path); error=\(reason)\(detail)")
             return []
         }
 
@@ -434,10 +493,6 @@ private struct TrackMetadataTarget {
 
 private struct TrackMetadataMatcher {
     func match(_ song: CatalogSongAttributes, to target: TrackMetadataTarget) -> TrackMetadataMatch? {
-        let candidateTitle = ComparableMetadataText(song.name)
-        let titleMatch = target.title.match(candidateTitle)
-        guard titleMatch != .none else { return nil }
-
         let durationDifference: TimeInterval? = {
             guard target.duration > 0,
                   let duration = song.durationInMillis,
@@ -445,6 +500,10 @@ private struct TrackMetadataMatcher {
             return abs(Double(duration) / 1000 - target.duration)
         }()
         if let durationDifference, durationDifference > 12 { return nil }
+
+        let candidateTitle = ComparableMetadataText(song.name)
+        let titleMatch = target.title.match(candidateTitle)
+        guard titleMatch != .none else { return nil }
 
         let candidateArtist = ComparableMetadataText(song.artistName)
         let artistMatch = target.artist.match(candidateArtist)
@@ -799,22 +858,12 @@ private enum CacheCandidate {
         guard case .file(let url) = self else { return nil }
         return url
     }
-
-    func data() -> Data? {
-        switch self {
-        case .file(let url):
-            return try? Data(contentsOf: url, options: .mappedIfSafe)
-        case .inline(let data):
-            return data
-        }
-    }
 }
-
 
 private final class CatalogResponseBox: @unchecked Sendable {
     let response: CatalogResponse
     let modifiedDate: Date?
-    init(_ response: CatalogResponse, modifiedDate: Date? = nil) {
+    init(_ response: CatalogResponse, modifiedDate: Date?) {
         self.response = response
         self.modifiedDate = modifiedDate
     }

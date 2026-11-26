@@ -15,7 +15,9 @@ final class LocalTranslationService {
             self.engine = engine
             engine.onStatus = { [weak self] in self?.onStatus?($0) }
             engine.onResult = { [weak self] in self?.onResult?($0) }
-            hostView = NSHostingView(rootView: TranslationHost(engine: engine))
+            if #unavailable(macOS 26) {
+                hostView = NSHostingView(rootView: TranslationHost(engine: engine))
+            }
         }
     }
 
@@ -37,7 +39,7 @@ final class LocalTranslationService {
     func start(document: LyricsDocument, track: TrackInfo) {
         if #available(macOS 15, *), let engine = engine as? TranslationEngine {
             engine.start(document: document, track: track)
-        } else { onStatus?("当前系统显示 Apple Music 缓存译文") }
+        } else { onStatus?("当前系统显示歌词自带的译文") }
     }
 
     func startFallback(document: LyricsDocument, track: TrackInfo, pendingLineIDs: Set<Int>, onlineTranslations: [Int: String]) {

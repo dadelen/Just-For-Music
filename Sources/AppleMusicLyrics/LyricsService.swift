@@ -1,7 +1,6 @@
 import Foundation
 import os
 
-/// Apple-only lyrics service backed by Music.app's local URL cache.
 final class LyricsService: Sendable {
     private struct CacheEntry: Sendable {
         let key: String
@@ -10,15 +9,31 @@ final class LyricsService: Sendable {
 
     private static let maximumCachedTracks = 12
     private let provider: AppleMusicCacheLyricsProvider
+    private let netease: NetEaseLyricsProvider
     private let cacheQueue = DispatchQueue(label: "music.lyrics-cache", qos: .userInitiated)
     private let recentLyrics = OSAllocatedUnfairLock(initialState: [CacheEntry]())
 
-    init(provider: AppleMusicCacheLyricsProvider = AppleMusicCacheLyricsProvider()) {
+    init(provider: AppleMusicCacheLyricsProvider = AppleMusicCacheLyricsProvider(),
+         netease: NetEaseLyricsProvider = NetEaseLyricsProvider()) {
         self.provider = provider
+        self.netease = netease
+    }
+
+    func appleMusicCacheRevision() -> AppleMusicCacheLyricsProvider.CacheRevision {
+        provider.cacheRevision()
+    }
+
+    func appleMusicCacheAccess() -> AppleMusicCacheLyricsProvider.CacheAccess {
+        provider.cacheAccess()
     }
 
     func lyrics(for track: TrackInfo, bypassMemory: Bool = false,
                 recentIndexOnly: Bool = false) async -> LyricsDocument {
+        switch track.source {
+        case .appleMusic: break
+        case .netease:
+            return await netease.lyrics(for: track, bypassCache: bypassMemory)
+        }
         // SQLite and filesystem calls block, so keep them off Swift's cooperative executor.
         let cancelled = OSAllocatedUnfairLock(initialState: false)
         return await withTaskCancellationHandler {

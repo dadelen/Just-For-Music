@@ -8,9 +8,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let artwork = ArtworkService()
     private let settings = SettingsWindowController()
     private let floating = FloatingLyricsController()
-    private let playbackMonitor = PlaybackMonitor()
+    private let applePlayback = PlaybackMonitor()
+    private lazy var playback = PlaybackSession(appleMusic: applePlayback, netease: NetEasePlayback())
     private let lyricsService = LyricsService()
-    private lazy var playbackController = MusicPlaybackController(monitor: playbackMonitor)
+    private lazy var playbackController = MusicPlaybackController(monitor: playback)
     private let updateService = UpdateService()
     private let logger = DiagnosticLogger.shared
 
@@ -25,6 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var isLoadingLyrics = false
     private var showsLoadingState = false
     private var lastLyricsAttempt = Date.distantPast
+    private var lastAppleMusicCacheRevision: AppleMusicCacheLyricsProvider.CacheRevision?
     private var lyricsRetryDelay: TimeInterval = 1.0
     private var lyricsTask: Task<Void, Never>?
     private var forceRefresh = false
@@ -33,6 +35,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastLoggedPlaybackState: String?
     private var updateTask: Task<Void, Never>?
     private var needlePlaybackTask: Task<Void, Never>?
+    private var appleMusicAuthorizationProcess: Process?
+    private var seekGeneration = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppPreferences.migrate()
@@ -69,8 +73,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.menuBar.setArtwork(image)
             self?.floating.setArtwork(image)
         }
-        playbackMonitor.onUpdate = { [weak self] result in
+        playback.onUpdate = { [weak self] result in
             self?.handlePlaybackUpdate(result)
+        }
+        settings.actions.playbackSourceChanged = { [weak self] source in
+            self?.selectPlayer(source)
+        }
+        settings.actions.authorizeAppleMusic = { [weak self] in self?.requestAppleMusicAutomation() }
+        settings.actions.refreshAppleMusicCacheAccess = { [weak self] in
+            guard let self else { return }
+            let previouslyDenied = self.settings.actions.appleMusicCacheAccess == .denied
+            if self.refreshAppleMusicCacheAccess() == .readable, previouslyDenied,
+               self.playback.source == .appleMusic {
+                self.forceRefreshLyrics()
+            }
         }
         settings.actions.refresh = { [weak self] in
             self?.forceRefreshLyrics()
@@ -80,6 +96,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         settings.actions.floatingLyricsFontSizeChanged = { [weak self] in
             self?.floating.reloadLyricsFontSize()
+        }
+        settings.actions.floatingLyricsSize = { [weak self] mode in
+            self?.floating.sizeOptions(for: mode)
+                ?? (AppPreferences.floatingLyricsSize(for: mode), mode.minimumSize, mode.minimumSize)
+        }
+        settings.actions.floatingLyricsSizeChanged = { [weak self] mode, size in
+            self?.floating.setSize(size, for: mode)
+        }
+        floating.onSizeChanged = { [weak self] in
+            self?.settings.actions.floatingLyricsSizeRevision += 1
         }
         settings.actions.previewGlassTransparency = { [weak self] transparency in
             self?.floating.setGlassTransparency(transparency)
@@ -97,12 +123,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menuBar.onSettings = { [weak self] in self?.settings.show() }
         menuBar.onShowLyrics = { [weak self] in self?.floating.showFromPlayer() }
         NotificationCenter.default.addObserver(self, selector: #selector(preferencesChanged), name: AppPreferences.didChange, object: nil)
-        menuBar.onSeek = { [weak self] position in
-            self?.playbackController.seek(to: position) { succeeded in
-                guard succeeded else { return }
-                self?.resetPlaybackClocks()
-            }
-        }
+        menuBar.onSeek = { [weak self] position in self?.seek(to: position) }
         let previousTrack: () -> Void = { [weak self] in
             self?.performDirectTransport(.previous)
         }
@@ -114,7 +135,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menuBar.onTogglePlayPause = togglePlayPause
         floating.onTogglePlayPause = togglePlayPause
         floating.onVinylTogglePlayPause = { [weak self] in
-            self?.performVinylTransport(.toggle)
+            self?.toggleVinylPlayback()
         }
         let nextTrack: () -> Void = { [weak self] in
             self?.performDirectTransport(.next)
@@ -128,12 +149,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.terminate(nil)
         }
 
-        floating.onSeek = { [weak self] position in
-            self?.playbackController.seek(to: position) { succeeded in
-                guard succeeded else { return }
-                self?.resetPlaybackClocks()
-            }
-        }
+        floating.onSeek = menuBar.onSeek
         floating.onVisibilityChanged = { [weak self] visible in
             self?.menuBar.setFloatingLyricsVisible(visible)
             guard AppPreferences.floatingLyricsVisible != visible else { return }
@@ -142,14 +158,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let showFloating = AppPreferences.floatingLyricsVisible
         floating.setVisible(showFloating)
-
-
-
-        menuBar.apply(status: .idle)
-        floating.apply(status: .idle)
-        playbackMonitor.start()
+        selectPlayer(AppPreferences.playbackSource)
         settings.actions.updateStatus = UpdateService.isConfigured ? "从自有 GitHub 仓库获取更新" : "自有 GitHub 更新源待配置"
         checkForUpdates(manual: false)
+    }
+
+    private func selectPlayer(_ source: PlaybackSource) {
+        guard playback.source != source else { return }
+        needlePlaybackTask?.cancel()
+        clearTrack()
+        forceRefresh = false
+        lastLoggedPlaybackState = nil
+        resetPlaybackClocks()
+        apply(.idle)
+        playback.select(source)
+    }
+
+    private func seek(to position: TimeInterval) {
+        guard let track = latestTrack, track.canSeek else { return }
+        seekGeneration += 1
+        let generation = seekGeneration
+        playbackController.seek(to: position) { [weak self] succeeded in
+            guard let self, self.seekGeneration == generation,
+                  self.latestTrack?.identityKey == track.identityKey else { return }
+            guard succeeded || track.source == .netease else { return }
+            self.resetPlaybackClocks()
+            if !succeeded {
+                self.menuBar.discardPendingSeek()
+                self.playback.sampleNow()
+            }
+        }
     }
 
     @objc private func preferencesChanged() {
@@ -232,16 +270,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func performDirectTransport(_ command: MusicPlaybackController.Command) {
         if let needlePlaybackTask {
             needlePlaybackTask.cancel()
-            playbackMonitor.cancelCommandConfirmation()
+            if playback.source == .appleMusic { applePlayback.cancelCommandConfirmation() }
         }
         playbackController.perform(command)
     }
 
-    private func performVinylTransport(_ command: MusicPlaybackController.Command) {
+    private func toggleVinylPlayback() {
         guard needlePlaybackTask == nil else { return }
         guard floating.showsVinyl, let track = latestTrack,
               track.state == .playing || track.state == .paused else {
-            performDirectTransport(command)
+            performDirectTransport(.toggle)
             return
         }
         needlePlaybackTask = Task { [weak self] in
@@ -251,33 +289,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.needlePlaybackTask = nil
             }
             guard !Task.isCancelled else { return }
-            await NeedlePlayback.run(
-                command, startingAt: track,
+            await NeedlePlayback.toggle(
+                startingAt: track,
                 moveNeedle: { await self.floating.cueNeedle(ontoRecord: $0) },
-                perform: { await self.performAndSample($0) },
+                setPlaybackState: { await self.setPlaybackState($0, trackKey: track.identityKey) },
                 currentTrack: { self.latestTrack }
             )
         }
     }
 
-    private func performAndSample(_ command: MusicPlaybackController.Command) async -> Bool {
-        guard !Task.isCancelled else { return false }
-        let trackKey = latestTrack?.identityKey
-        guard await playbackController.perform(command), !Task.isCancelled else { return false }
-        let expectation: PlaybackMonitor.CommandExpectation
-        switch command {
-        case .play: expectation = .init(state: .playing, trackKey: trackKey)
-        case .pause: expectation = .init(state: .paused, trackKey: trackKey)
-        case .cuePrevious, .cueNext: expectation = .init(state: .paused, trackKey: nil)
-        default: return false
-        }
+    private func setPlaybackState(_ state: PlayerState, trackKey: String) async {
+        let command: MusicPlaybackController.Command = state == .playing ? .play : .pause
+        guard !Task.isCancelled, await playbackController.perform(command), !Task.isCancelled else { return }
+        let expectation = PlaybackMonitor.CommandExpectation(state: state, trackKey: trackKey)
         // The helper returns a fresh state together with its command result.
-        if let latestTrack,
-           expectation.trackKey != nil || latestTrack.identityKey != trackKey,
-           let confirmed = expectation.resolution(for: .track(latestTrack)) {
-            return confirmed
+        if let latestTrack, expectation.resolution(for: .track(latestTrack)) != nil { return }
+        if playback.source == .appleMusic {
+            _ = await applePlayback.confirmCommand(expectation)
+            return
         }
-        return await playbackMonitor.confirmCommand(expectation)
+        // AX actions can finish before the client updates its controls.
+        playback.sampleNow()
+        for _ in 0..<12 {
+            do { try await Task.sleep(nanoseconds: 125_000_000) } catch { return }
+            guard playback.source == .netease, let latestTrack else { return }
+            if expectation.resolution(for: .track(latestTrack)) != nil { return }
+        }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -292,7 +329,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateTask?.cancel()
         needlePlaybackTask?.cancel()
         lyricsTask?.cancel()
-        playbackMonitor.stop()
+        playback.stop()
         logger.flush()
     }
 
@@ -403,10 +440,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func openMusic() {
+        let source = AppPreferences.playbackSource
         guard let applicationURL = NSWorkspace.shared.urlForApplication(
-            withBundleIdentifier: "com.apple.Music"
+            withBundleIdentifier: source.bundleIdentifier
         ) else {
-            logger.warning("Unable to locate Music.app")
+            presentMessage(title: "找不到\(source.title)", message: "请先安装所选播放器。")
             return
         }
         let configuration = NSWorkspace.OpenConfiguration()
@@ -416,33 +454,112 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             configuration: configuration
         ) { [logger] _, error in
             if let error {
-                logger.warning("Unable to open Music.app: \(error.localizedDescription)")
+                logger.warning("Unable to open \(source.title): \(error.localizedDescription)")
             }
         }
     }
 
+    private func requestAppleMusicAutomation() {
+        let actions = settings.actions
+        guard !actions.requestingAppleMusicAutomation, !actions.appleMusicAutomationRequested,
+              let helperURL = PlaybackMonitor.helperExecutableURL else { return }
+        actions.requestingAppleMusicAutomation = true
+        if NSRunningApplication.runningApplications(withBundleIdentifier: PlaybackSource.appleMusic.bundleIdentifier)
+            .contains(where: { !$0.isTerminated }) {
+            runAppleMusicAuthorization(helperURL)
+        } else if let musicURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: PlaybackSource.appleMusic.bundleIdentifier) {
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = false
+            NSWorkspace.shared.openApplication(at: musicURL, configuration: configuration) { [weak self] _, error in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    if let error {
+                        self.settings.actions.requestingAppleMusicAutomation = false
+                        self.logger.warning("Unable to open Music for authorization: \(error.localizedDescription)")
+                    } else {
+                        self.runAppleMusicAuthorization(helperURL)
+                    }
+                }
+            }
+        } else {
+            actions.requestingAppleMusicAutomation = false
+        }
+    }
+
+    private func runAppleMusicAuthorization(_ helperURL: URL) {
+        let process = Process()
+        process.executableURL = helperURL
+        process.arguments = ["--authorize"]
+        let errors = Pipe()
+        process.standardError = errors
+        process.terminationHandler = { [weak self] process in
+            let status = process.terminationStatus
+            let errorText = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.appleMusicAuthorizationProcess = nil
+                self.settings.actions.requestingAppleMusicAutomation = false
+                if status == 0 || errorText == "-1743" {
+                    self.settings.actions.recordAppleMusicAutomationRequest()
+                }
+                if status != 0 { self.logger.warning("Music automation request ended; status=\(errorText)") }
+                self.settings.actions.checkPlaybackPermissions()
+                if self.playback.source == .appleMusic { self.playback.sampleNow() }
+            }
+        }
+        do {
+            try process.run()
+            appleMusicAuthorizationProcess = process
+        } catch {
+            settings.actions.requestingAppleMusicAutomation = false
+            logger.warning("Unable to start Music authorization: \(error.localizedDescription)")
+        }
+    }
+
+    @discardableResult
+    private func refreshAppleMusicCacheAccess() -> AppleMusicCacheLyricsProvider.CacheAccess {
+        let access = lyricsService.appleMusicCacheAccess()
+        if settings.actions.appleMusicCacheAccess != access {
+            settings.actions.appleMusicCacheAccess = access
+            if access == .denied { logger.warning("macOS denied access to the Apple Music lyric cache") }
+        }
+        return access
+    }
+
     // MARK: - Playback updates
+
+    private func clearTrack() {
+        seekGeneration += 1
+        latestTrack = nil
+        currentTrackKey = nil
+        lyricsGeneration = UUID()
+        lyricsTask?.cancel()
+        lyricsTask = nil
+        isLoadingLyrics = false
+        showsLoadingState = false
+        sourceLyrics = .empty
+        translatedLyrics = nil
+        currentLyrics = .empty
+        cancelTranslation()
+        updateTranslationDemand()
+    }
 
     private func handlePlaybackUpdate(_ result: PlaybackMonitor.Update) {
         switch result {
         case .failure(let error):
-            currentTrackKey = nil
-            lyricsGeneration = UUID()
-            lyricsTask?.cancel()
-            isLoadingLyrics = false
-            cancelTranslation()
-            latestTrack = nil
-            updateTranslationDemand()
             let message = error.localizedDescription
-            let isNewError = lastLoggedPlaybackState != "error"
-            logPlaybackState("error")
-            if isNewError {
-                logger.error("Music AppleScript request failed: \(message)")
-            }
-            if message.localizedCaseInsensitiveContains("not allowed")
+            let state = "error: \(message)"
+            guard lastLoggedPlaybackState != state else { return }
+            clearTrack()
+            lastLoggedPlaybackState = state
+            logger.error("Playback request failed: \(message)")
+            if playback.source == .netease {
+                apply(.error(message))
+            } else if message.localizedCaseInsensitiveContains("not allowed")
                 || message.localizedCaseInsensitiveContains("(-1743)")
                 || message.localizedCaseInsensitiveContains("authorization") {
-                apply(.error("请在系统设置的「隐私与安全性 → 自动化」中允许访问音乐。"))
+                apply(.error("请在应用的「设置 → 播放来源」检查 Apple Music 自动化权限。"))
             } else {
                 apply(.error("读取播放状态失败，请在设置中查看诊断信息。"))
             }
@@ -453,38 +570,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             handle(track: track)
 
         case .stopped:
+            guard lastLoggedPlaybackState != "playback stopped" else { return }
             logPlaybackState("playback stopped")
-            latestTrack = nil
-            cancelTranslation()
-            lyricsGeneration = UUID()
-            lyricsTask?.cancel()
-            currentTrackKey = nil
-            sourceLyrics = .empty
-            translatedLyrics = nil
-            currentLyrics = .empty
-            updateTranslationDemand()
+            clearTrack()
             apply(.stopped)
 
         case .musicNotRunning:
-            logPlaybackState("Music.app not running")
-            latestTrack = nil
-            cancelTranslation()
-            lyricsGeneration = UUID()
-            lyricsTask?.cancel()
-            currentTrackKey = nil
-            sourceLyrics = .empty
-            translatedLyrics = nil
-            currentLyrics = .empty
-            updateTranslationDemand()
+            guard lastLoggedPlaybackState != "selected player not running" else { return }
+            logPlaybackState("selected player not running")
+            clearTrack()
             apply(.musicNotRunning)
         }
     }
 
     private func handle(track: TrackInfo) {
         let key = track.identityKey
-        let trackChanged = currentTrackKey != key
+        let needsNewLyrics = currentTrackKey != key || forceRefresh
 
-        if trackChanged || forceRefresh {
+        if needsNewLyrics {
             let bypassMemory = forceRefresh
             logger.info(
                 "Lyrics lookup triggered; reason=\(bypassMemory ? "manual refresh" : "track changed"); "
@@ -496,48 +599,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             currentTrackKey = key
             currentLyrics = .empty
             forceRefresh = false
-            lyricsRetryDelay = 1.0
+            lyricsRetryDelay = track.source == .appleMusic ? 1.0 : 60
             loadLyrics(for: track, showLoading: true, bypassMemory: bypassMemory)
-            apply(.loadingLyrics(track))
+        }
+
+        if needsNewLyrics || isLoadingLyrics {
+            apply(showsLoadingState ? .loadingLyrics(track) : noLyricsStatus(for: track))
             return
         }
 
-        if isLoadingLyrics {
-            apply(showsLoadingState ? .loadingLyrics(track) : .noLyrics(track))
-            return
-        }
-
-        if currentLyrics.isSynced, let line = currentLyrics.line(at: track.position) {
-            let text = line.text.isEmpty ? track.displayName : line.text
+        if currentLyrics.isSynced || currentLyrics.plainText?.isEmpty == false {
+            let line = currentLyrics.isSynced ? currentLyrics.line(at: track.position) : nil
+            let text = line.flatMap { $0.text.isEmpty ? nil : $0.text } ?? track.displayName
             apply(.showing(track: track, lyrics: currentLyrics, currentLine: text))
-        } else if currentLyrics.isSynced {
-            apply(.showing(track: track, lyrics: currentLyrics, currentLine: track.displayName))
-        } else if let plain = currentLyrics.plainText, !plain.isEmpty {
-            apply(.showing(track: track, lyrics: currentLyrics, currentLine: track.displayName))
-        } else {
-            // Music may write the lyrics response shortly after the track-change
-            // notification. Rescan quietly until the local cache catches up.
-            if Date().timeIntervalSince(lastLyricsAttempt) >= lyricsRetryDelay {
-                lyricsRetryDelay = min(15, lyricsRetryDelay * 1.5)
-                loadLyrics(for: track, showLoading: false)
-            }
-            apply(.noLyrics(track))
+            return
         }
+
+        if track.source == .appleMusic, settings.actions.appleMusicCacheAccess == .denied {
+            apply(noLyricsStatus(for: track))
+            return
+        }
+        let elapsed = Date().timeIntervalSince(lastLyricsAttempt)
+        // Retry when Music writes a response, even after polling has backed off.
+        let cacheChanged = track.source == .appleMusic && elapsed >= 0.5
+            && lastAppleMusicCacheRevision != lyricsService.appleMusicCacheRevision()
+        if cacheChanged || elapsed >= lyricsRetryDelay {
+            let maximumDelay: TimeInterval = track.source == .appleMusic ? 15 : 600
+            lyricsRetryDelay = min(maximumDelay, lyricsRetryDelay * 1.5)
+            loadLyrics(for: track, showLoading: false)
+        }
+        apply(noLyricsStatus(for: track))
+    }
+
+    private func noLyricsStatus(for track: TrackInfo) -> AppStatus {
+        .noLyrics(track, cacheAccessDenied: track.source == .appleMusic && settings.actions.appleMusicCacheAccess == .denied)
     }
 
     private func loadLyrics(for track: TrackInfo, showLoading: Bool, bypassMemory: Bool = false) {
         lyricsTask?.cancel()
+        lyricsGeneration = UUID()
+        let generation = lyricsGeneration
+        if track.source == .appleMusic, refreshAppleMusicCacheAccess() == .denied {
+            lyricsTask = nil
+            isLoadingLyrics = false
+            showsLoadingState = false
+            return
+        }
         isLoadingLyrics = true
         showsLoadingState = showLoading
         lastLyricsAttempt = Date()
+        if track.source == .appleMusic {
+            lastAppleMusicCacheRevision = lyricsService.appleMusicCacheRevision()
+        }
         let key = track.identityKey
-        lyricsGeneration = UUID()
-        let generation = lyricsGeneration
         updateTranslationDemand()
 
         lyricsTask = Task { [weak self, lyricsService] in
             var document = await lyricsService.lyrics(for: track, bypassMemory: bypassMemory)
-            if showLoading, document.lines.isEmpty {
+            if track.source == .appleMusic, showLoading, document.lines.isEmpty {
                 // Pick up responses written shortly after the track changes, then back off.
                 let retryIntervalsMS: [UInt64] = [250, 350, 500, 650, 750]
                 for interval in retryIntervalsMS {
@@ -547,13 +666,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     document = await lyricsService.lyrics(for: track, recentIndexOnly: true)
                     if !document.lines.isEmpty {
                         break
-                    }
-                }
-                if document.lines.isEmpty {
-                    guard !Task.isCancelled, self?.lyricsGeneration == generation else { return }
-                    self?.showsLoadingState = false
-                    if let latest = self?.latestTrack, latest.identityKey == key {
-                        self?.apply(.noLyrics(latest))
                     }
                 }
             }
@@ -582,7 +694,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         lastDisplayedLine = nil
         lastTrackKeyForUI = nil
         forceRefresh = true
-        playbackMonitor.sampleNow()
+        playback.sampleNow()
     }
 
     private func logPlaybackState(_ state: String) {
@@ -598,9 +710,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func apply(_ status: AppStatus) {
-        let url: URL?
-        if case .showing(_, let lyrics, _) = status { url = lyrics.artworkURL } else { url = nil }
-        artwork.update(track: status.track, url: url)
+        let track = status.track
+        let url = track?.artworkURL ?? (track?.identityKey == currentTrackKey ? sourceLyrics.artworkURL : nil)
+        artwork.update(track: track, url: url)
         // Skip full menu rebuild when the visible lyric line is unchanged.
         if case .showing(let track, let lyrics, let currentLine) = status {
             if lastTrackKeyForUI == track.identityKey, lastDisplayedLine == currentLine {

@@ -24,46 +24,27 @@ final class PlaybackControlsTests: XCTestCase {
         for (state, movement, command) in [(PlayerState.playing, "lift", "pause"), (.paused, "lower", "play")] {
             let song = track("Song", state: state)
             var steps: [String] = []
-            await NeedlePlayback.run(.toggle, startingAt: song, moveNeedle: { engaged in
+            await NeedlePlayback.toggle(startingAt: song, moveNeedle: { engaged in
                 steps.append(engaged ? "lower" : "lift")
                 await Task.yield()
                 steps.append("settled")
-            }, perform: {
-                steps.append($0.rawValue)
-                return true
+            }, setPlaybackState: {
+                steps.append($0 == .playing ? "play" : "pause")
             }, currentTrack: { song })
             XCTAssertEqual(steps, [movement, "settled", command])
-        }
-    }
-
-    func testNeedleTrackChangeRestoresPlaybackOnlyWhenItWasPlaying() async {
-        for state in [PlayerState.playing, .paused] {
-            let song = track("First", state: state)
-            var current = song
-            var steps: [String] = []
-            await NeedlePlayback.run(.next, startingAt: song, moveNeedle: {
-                steps.append($0 ? "lower" : "lift")
-            }, perform: { command in
-                steps.append(command.rawValue)
-                if command == .cueNext { current = self.track("Second", state: .paused) }
-                return true
-            }, currentTrack: { current })
-            let expected = state == .playing ? ["lift", "cue-next", "lower", "play"] : ["lift", "cue-next"]
-            XCTAssertEqual(steps, expected)
         }
     }
 
     func testNeedleDoesNotSendDelayedCommandAfterTrackChangesExternally() async {
         let song = track("First", state: .paused)
         var current = song
-        var commands: [MusicPlaybackController.Command] = []
-        await NeedlePlayback.run(.toggle, startingAt: song, moveNeedle: { _ in
+        var states: [PlayerState] = []
+        await NeedlePlayback.toggle(startingAt: song, moveNeedle: { _ in
             current = self.track("Second", state: .paused)
-        }, perform: {
-            commands.append($0)
-            return true
+        }, setPlaybackState: {
+            states.append($0)
         }, currentTrack: { current })
-        XCTAssertTrue(commands.isEmpty)
+        XCTAssertTrue(states.isEmpty)
     }
 
     func testNeedleConfirmationWaitsPastOldPlaybackSamples() {

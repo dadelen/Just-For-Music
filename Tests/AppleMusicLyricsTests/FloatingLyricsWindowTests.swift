@@ -48,7 +48,7 @@ final class FloatingLyricsWindowTests: XCTestCase {
             defaults.set(originalSize, forKey: sizeKey)
         }
 
-        for (legacy, size) in [("small", FloatingLyricsMode.minimumVinylSize),
+        for (legacy, size) in [("small", FloatingLyricsMode.defaultVinylSize),
                                ("large", FloatingLyricsMode.maximumVinylSize)] {
             defaults.set(legacy, forKey: modeKey)
             defaults.removeObject(forKey: sizeKey)
@@ -59,20 +59,25 @@ final class FloatingLyricsWindowTests: XCTestCase {
         }
     }
 
-    func testVinylResizeUsesNativeLimitsAndRestoresCustomSizeAcrossModes() throws {
+    func testResizeUsesNativeLimitsAndRemembersEachModeSeparately() throws {
         _ = NSApplication.shared
         let originalMode = AppPreferences.floatingLyricsMode
         let originalSize = AppPreferences.floatingLyricsVinylSize
+        let originalMinimalSize = AppPreferences.floatingLyricsSize(for: .minimal)
         let originalLock = AppPreferences.floatingPositionLocked
         let originalFrames = AppPreferences.floatingLyricsFramesByDisplay
+        let originalDisplay = AppPreferences.floatingLyricsLastDisplay
         defer {
             AppPreferences.floatingLyricsMode = originalMode
             AppPreferences.floatingLyricsVinylSize = originalSize
+            AppPreferences.setFloatingLyricsSize(originalMinimalSize, for: .minimal)
             AppPreferences.floatingPositionLocked = originalLock
             AppPreferences.floatingLyricsFramesByDisplay = originalFrames
+            AppPreferences.floatingLyricsLastDisplay = originalDisplay
         }
         AppPreferences.floatingLyricsMode = .vinyl
         AppPreferences.floatingLyricsVinylSize = FloatingLyricsMode.minimumVinylSize
+        AppPreferences.setFloatingLyricsSize(FloatingLyricsMode.minimalSize, for: .minimal)
         AppPreferences.floatingPositionLocked = false
         AppPreferences.floatingLyricsFramesByDisplay = [:]
 
@@ -81,17 +86,19 @@ final class FloatingLyricsWindowTests: XCTestCase {
         let panel = try XCTUnwrap(fields.first { $0.label == "panel" }?.value as? NSPanel)
         let canvas = try XCTUnwrap(fields.first { $0.label == "canvas" }?.value as? NSView)
         let lockButton = try XCTUnwrap(fields.first { $0.label == "lockButton" }?.value as? NSButton)
+        let trackDetails = try XCTUnwrap(fields.first { $0.label == "trackDetails" }?.value as? NSView)
+        XCTAssertTrue(trackDetails.isHidden)
         XCTAssertTrue(panel.styleMask.contains(.resizable))
         XCTAssertEqual(panel.frame.size, FloatingLyricsMode.minimumVinylSize)
 
         panel.setContentSize(NSSize(width: 1200, height: 600))
         let available = try XCTUnwrap(panel.screen ?? NSScreen.main).visibleFrame
         XCTAssertEqual(panel.frame.size, NSSize(width: min(1200, available.width), height: min(600, available.height)))
-        panel.setContentSize(NSSize(width: 350, height: 180))
+        panel.setContentSize(NSSize(width: 100, height: 100))
         XCTAssertEqual(panel.frame.size, FloatingLyricsMode.minimumVinylSize)
 
         let vinyl = try XCTUnwrap(fields.first { $0.label == "vinyl" }?.value as? NSView)
-        for size in [NSSize(width: 1200, height: 260), NSSize(width: 640, height: 1000)] {
+        for size in [FloatingLyricsMode.minimumVinylSize, NSSize(width: 1200, height: 260), NSSize(width: 640, height: 1000)] {
             panel.setContentSize(size)
             vinyl.layoutSubtreeIfNeeded()
             let record = try XCTUnwrap(vinyl.layer?.sublayers?.first { $0.animation(forKey: "rotation") != nil })
@@ -99,6 +106,7 @@ final class FloatingLyricsWindowTests: XCTestCase {
             XCTAssertGreaterThan(canvas.bounds.width, 0)
             XCTAssertGreaterThan(canvas.bounds.height, 0)
             XCTAssertFalse(canvas.frame.intersects(vinyl.frame))
+            XCTAssertLessThanOrEqual(vinyl.frame.maxY, lockButton.frame.minY)
         }
 
         let custom = NSSize(width: 770, height: 340)
@@ -109,12 +117,29 @@ final class FloatingLyricsWindowTests: XCTestCase {
 
         AppPreferences.floatingLyricsMode = .minimal
         controller.applyPreferences()
-        XCTAssertFalse(panel.styleMask.contains(.resizable))
+        XCTAssertFalse(trackDetails.isHidden)
+        XCTAssertTrue(panel.styleMask.contains(.resizable))
         XCTAssertEqual(panel.frame.size, FloatingLyricsMode.minimalSize)
         XCTAssertTrue(panel.isMovable)
+        XCTAssertEqual(controller.sizeOptions(for: .minimal).minimum, FloatingLyricsMode.minimal.minimumSize)
+
+        let compactSize = NSSize(width: 487.5, height: 321.5)
+        lockButton.performClick(nil)
+        controller.setSize(NSSize(width: compactSize.width, height: panel.frame.height), for: .minimal)
+        XCTAssertEqual(panel.frame.height, FloatingLyricsMode.minimalSize.height)
+        controller.setSize(compactSize, for: .minimal)
+        XCTAssertEqual(panel.frame.width, compactSize.width, accuracy: 1)
+        XCTAssertEqual(panel.frame.height, compactSize.height, accuracy: 1)
+        XCTAssertEqual(controller.sizeOptions(for: .minimal).size, panel.frame.size)
+        XCTAssertTrue(panel.ignoresMouseEvents)
+        XCTAssertFalse(panel.styleMask.contains(.resizable))
+        XCTAssertEqual(AppPreferences.floatingLyricsSize(for: .minimal), compactSize)
+        XCTAssertEqual(AppPreferences.floatingLyricsVinylSize, custom)
+        lockButton.performClick(nil)
 
         AppPreferences.floatingLyricsMode = .vinyl
         controller.applyPreferences()
+        XCTAssertTrue(trackDetails.isHidden)
         lockButton.performClick(nil)
         XCTAssertTrue(AppPreferences.floatingPositionLocked)
         XCTAssertEqual(panel.frame.size, custom)
@@ -129,6 +154,16 @@ final class FloatingLyricsWindowTests: XCTestCase {
         XCTAssertTrue(panel.canBecomeKey)
         XCTAssertEqual(panel.frame.size, custom)
         XCTAssertEqual(panel.contentMaxSize, try XCTUnwrap(panel.screen ?? NSScreen.main).visibleFrame.size)
+
+        AppPreferences.floatingLyricsMode = .minimal
+        controller.applyPreferences()
+        XCTAssertEqual(panel.frame.width, compactSize.width, accuracy: 1)
+        XCTAssertEqual(panel.frame.height, compactSize.height, accuracy: 1)
+        controller.savePendingPosition()
+        let restored = FloatingLyricsController()
+        let restoredSize = restored.sizeOptions(for: .minimal).size
+        XCTAssertEqual(restoredSize.width, compactSize.width, accuracy: 1)
+        XCTAssertEqual(restoredSize.height, compactSize.height, accuracy: 1)
     }
 
     func testGlassTransparencyFadesOnlyTheFloatingBackdrop() throws {
@@ -343,6 +378,67 @@ final class FloatingLyricsWindowTests: XCTestCase {
         let highlightPosition = Mirror(reflecting: current).children.first { $0.label == "lastProgressPosition" }?.value as? TimeInterval
         XCTAssertEqual(highlightPosition, track.position)
         XCTAssertFalse(canvas.needsDisplay)
+    }
+
+    func testCardWidthAndHeightScaleLyricsAndSupplementaryTextInBothModes() async throws {
+        _ = NSApplication.shared
+        let defaults = UserDefaults.standard
+        let keys = [AppPreferences.floatingLyricsModeKey, "lyrics.fontScale", "floatingLyrics.vinylSize",
+                    "floatingLyrics.minimalSize", "floatingLyrics.framesByDisplay", "floatingLyrics.lastDisplay"]
+        let savedValues = keys.map { defaults.object(forKey: $0) }
+        defer {
+            for (key, savedValue) in zip(keys, savedValues) { defaults.set(savedValue, forKey: key) }
+        }
+        AppPreferences.fontScale = 1.1
+        AppPreferences.floatingLyricsFramesByDisplay = [:]
+        let controller = FloatingLyricsController()
+        let canvas = try XCTUnwrap(Mirror(reflecting: controller).descendant("canvas") as? LyricsCanvasView)
+        let track = TrackInfo(title: "Test", artist: "", album: "", duration: 30, position: 7, state: .paused)
+        let lines = [LyricLine(time: 0, text: "Earlier"),
+                     LyricLine(time: 5, text: "Current", translation: "当前", transliteration: "Kāna"),
+                     LyricLine(time: 10, text: "Next")]
+        let lyrics = LyricsDocument(lines: lines, plainText: nil, source: "test", isSynced: true, wordTiming: .none)
+
+        func pointSizes() throws -> [CGFloat] {
+            let rows = try XCTUnwrap(Mirror(reflecting: canvas).descendant("karaokeLayers") as? [CALayer])
+            let current = Mirror(reflecting: rows[1])
+            XCTAssertFalse(rows[1].isHidden)
+            XCTAssertEqual(current.descendant("lastProgressPosition") as? TimeInterval, track.position)
+            let upcoming = try XCTUnwrap(current.descendant("upcomingLayer") as? CALayer)
+            let supplementary = try XCTUnwrap(current.descendant("supplementaryLayer") as? CALayer)
+            let mainText = try XCTUnwrap(Mirror(reflecting: upcoming).descendant("storage") as? NSTextStorage)
+            let secondaryText = try XCTUnwrap(Mirror(reflecting: supplementary).descendant("storage") as? NSTextStorage)
+            return try [(mainText, 0), (secondaryText, 0), (secondaryText, secondaryText.length - 1)].map { text, index in
+                try XCTUnwrap(text.attribute(.font, at: index, effectiveRange: nil) as? NSFont).pointSize
+            }
+        }
+
+        func resize(_ size: NSSize, mode: FloatingLyricsMode) async throws -> [CGFloat] {
+            controller.setSize(size, for: mode)
+            try await Task.sleep(nanoseconds: 120_000_000)
+            return try pointSizes()
+        }
+
+        for (mode, size) in [(FloatingLyricsMode.vinyl, FloatingLyricsMode.defaultVinylSize),
+                             (.minimal, FloatingLyricsMode.minimalSize)] {
+            AppPreferences.floatingLyricsMode = mode
+            AppPreferences.setFloatingLyricsSize(size, for: mode)
+            controller.applyPreferences()
+            canvas.setSupplementaryLyrics(showTranslation: true, showTransliteration: true)
+            canvas.update(track: track, lyrics: lyrics)
+            let original = try pointSizes()
+            let wider = NSSize(width: size.width + 100, height: size.height)
+            let widened = try await resize(wider, mode: mode)
+            let taller = NSSize(width: wider.width, height: wider.height + 100)
+            let enlarged = try await resize(taller, mode: mode)
+            let reduced = try await resize(mode.minimumSize, mode: mode)
+            for index in original.indices {
+                XCTAssertGreaterThan(widened[index], original[index])
+                XCTAssertGreaterThan(enlarged[index], widened[index])
+                XCTAssertLessThan(reduced[index], original[index])
+            }
+        }
+        XCTAssertEqual(AppPreferences.fontScale, 1.1)
     }
 
     func testFloatingLyricsFollowNativeMenuBarAppearanceWhenSwitchingSongs() async throws {
@@ -595,11 +691,363 @@ final class FloatingLyricsWindowTests: XCTestCase {
         show(at: 10.5)
         XCTAssertTrue(gapRows.allSatisfy(\.isHidden))
         XCTAssertEqual(scrollIndex(), 4)
+        let content = try XCTUnwrap(rows[4].superlayer)
+        let finalLyricY = content.bounds.origin.y
 
         show(at: 13)
         XCTAssertEqual(gapRows.map(\.isHidden), [true, true, false])
+        XCTAssertEqual(content.bounds.origin.y, finalLyricY, accuracy: 0.001)
         show(at: 16)
         XCTAssertTrue(gapRows.allSatisfy(\.isHidden))
+        XCTAssertEqual(content.bounds.origin.y, finalLyricY, accuracy: 0.001)
+    }
+
+    private func browseToLastRow(in canvas: LyricsCanvasView) throws {
+        let event = try XCTUnwrap(CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1,
+                                          wheel1: -9000, wheel2: 0, wheel3: 0))
+        canvas.scrollWheel(with: try XCTUnwrap(NSEvent(cgEvent: event)))
+    }
+
+    private func browsingDocument() -> LyricsDocument {
+        let lines = (0..<72).map { index in LyricLine(time: Double(index) * 5, text: "Lyric row \(index)") }
+        return LyricsDocument(lines: lines, plainText: nil, source: "test", isSynced: true, wordTiming: .none)
+    }
+
+    private func browsingTrack(at row: Int) -> TrackInfo {
+        TrackInfo(title: "Manual browse", artist: "", album: "", duration: 360,
+                  position: Double(row) * 5 + 1, state: .paused)
+    }
+
+    func testLastLyricStopsScrollAndAllowsReversingDirection() async throws {
+        _ = NSApplication.shared
+        let previous = UserDefaults.standard.object(forKey: "lyrics.smoothScrolling")
+        defer { UserDefaults.standard.set(previous, forKey: "lyrics.smoothScrolling") }
+        AppPreferences.smoothScrolling = true
+
+        let canvas = LyricsCanvasView(frame: NSRect(x: 0, y: 0, width: 360, height: 96))
+        defer { canvas.setWindowVisible(false) }
+        canvas.layoutSubtreeIfNeeded()
+        canvas.setWindowVisible(true)
+        let lyrics = browsingDocument()
+        let last = lyrics.lines.count - 1
+        canvas.update(track: browsingTrack(at: last - 1), lyrics: lyrics)
+        let rows = try XCTUnwrap(Mirror(reflecting: canvas).descendant("karaokeLayers") as? [CALayer])
+        let content = try XCTUnwrap(rows[last - 1].superlayer)
+        let previousLyricY = content.bounds.origin.y
+
+        canvas.update(track: browsingTrack(at: last), lyrics: lyrics)
+        let finalLyricY = content.bounds.origin.y
+        XCTAssertLessThan(finalLyricY, previousLyricY)
+        if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            let spring = try XCTUnwrap(content.animation(forKey: "lineScroll") as? CASpringAnimation)
+            XCTAssertGreaterThanOrEqual(spring.damping, 2 * sqrt(spring.mass * spring.stiffness),
+                                        "The last lyric's spring must settle without going past the endpoint")
+        }
+
+        try browseToLastRow(in: canvas)
+        try browseToLastRow(in: canvas)
+        XCTAssertEqual(content.bounds.origin.y, finalLyricY, accuracy: 0.001)
+        let timeout = ProcessInfo.processInfo.systemUptime + 1
+        while Mirror(reflecting: canvas).descendant("isManualScrolling") as? Bool == true,
+              ProcessInfo.processInfo.systemUptime < timeout {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertEqual(Mirror(reflecting: canvas).descendant("isManualScrolling") as? Bool, false)
+        XCTAssertEqual(content.bounds.origin.y, finalLyricY, accuracy: 0.001)
+        XCTAssertNil(content.animation(forKey: "lineScroll"))
+
+        let reverse = try XCTUnwrap(CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1,
+                                            wheel1: 60, wheel2: 0, wheel3: 0))
+        canvas.scrollWheel(with: try XCTUnwrap(NSEvent(cgEvent: reverse)))
+        XCTAssertGreaterThan(content.bounds.origin.y, finalLyricY)
+    }
+
+    func testLastLyricStaysAtTheBottomOnceFullyVisible() throws {
+        _ = NSApplication.shared
+        let canvas = LyricsCanvasView(frame: NSRect(x: 0, y: 0, width: 360, height: 220))
+        canvas.layoutSubtreeIfNeeded()
+        let lyrics = browsingDocument()
+        let last = lyrics.lines.count - 1
+        canvas.update(track: browsingTrack(at: last - 1), lyrics: lyrics)
+        let rows = try XCTUnwrap(Mirror(reflecting: canvas).descendant("karaokeLayers") as? [CALayer])
+        let content = try XCTUnwrap(rows[last].superlayer)
+        let reachedY = content.bounds.origin.y
+
+        canvas.update(track: browsingTrack(at: last), lyrics: lyrics)
+        XCTAssertEqual(content.bounds.origin.y, reachedY, accuracy: 0.001)
+        XCTAssertNil(content.animation(forKey: "lineScroll"))
+        let textBottom = content.bounds.maxY - rows[last].frame.minY
+        XCTAssertEqual(textBottom, canvas.bounds.height * 0.88, accuracy: 1)
+    }
+
+    func testOutroKeepsTheFinalHarmonyPhraseInPlaceForBothPlayers() throws {
+        _ = NSApplication.shared
+        let lead = LyricLine(time: 10, text: "Lead", words: [.init(text: "Lead", start: 10, end: 20)],
+                             confirmedEnd: 20,
+                             harmonies: [LyricHarmony(time: 15, words: [.init(text: "（Echo）", start: 15, end: 18)])])
+        let lyrics = LyricsDocument(lines: [lead], plainText: nil, source: "Test", isSynced: true, wordTiming: .exact)
+            .addingGaps(duration: 40)
+        for source in [PlaybackSource.appleMusic, .netease] {
+            for height: CGFloat in [96, 200] {
+                let canvas = LyricsCanvasView(frame: NSRect(x: 0, y: 0, width: 360, height: height))
+                canvas.layoutSubtreeIfNeeded()
+                func show(at time: TimeInterval) {
+                    canvas.update(track: TrackInfo(title: "Test", artist: "", album: "", duration: 40,
+                                                   position: time, state: .paused, source: source), lyrics: lyrics)
+                }
+                show(at: 16)
+                let rows = try XCTUnwrap(Mirror(reflecting: canvas).descendant("karaokeLayers") as? [CALayer])
+                let content = try XCTUnwrap(rows[1].superlayer)
+                let phraseY = content.bounds.origin.y
+                let harmonyBottom = content.bounds.maxY - rows[2].frame.minY
+                XCTAssertLessThanOrEqual(harmonyBottom, height * 0.88 + 1)
+                let leadTop = content.bounds.maxY - rows[1].frame.maxY
+                XCTAssertGreaterThanOrEqual(leadTop, 0)
+                show(at: 21)
+                XCTAssertEqual(content.bounds.origin.y, phraseY, accuracy: 0.001)
+                XCTAssertFalse(try XCTUnwrap(rows.last).isHidden)
+                if height == 200 {
+                    let cueBottom = content.bounds.maxY - (try XCTUnwrap(rows.last).frame.minY)
+                    XCTAssertLessThanOrEqual(cueBottom, height * 0.88 + 1)
+                }
+                show(at: 40)
+                XCTAssertEqual(content.bounds.origin.y, phraseY, accuracy: 0.001)
+                XCTAssertTrue(try XCTUnwrap(rows.last).isHidden)
+            }
+        }
+    }
+
+    func testManualBrowseKeepsItsPlaceUntilReturningToTheLatestPlayingLine() async throws {
+        _ = NSApplication.shared
+        let previous = UserDefaults.standard.object(forKey: "lyrics.smoothScrolling")
+        defer { UserDefaults.standard.set(previous, forKey: "lyrics.smoothScrolling") }
+        AppPreferences.smoothScrolling = false
+
+        let canvas = LyricsCanvasView(frame: NSRect(x: 0, y: 0, width: 360, height: 200))
+        defer { canvas.setWindowVisible(false) }
+        let lyrics = browsingDocument()
+        canvas.setWindowVisible(true)
+        canvas.update(track: browsingTrack(at: 3), lyrics: lyrics)
+        let rows = try XCTUnwrap(Mirror(reflecting: canvas).descendant("karaokeLayers") as? [CALayer])
+        let content = try XCTUnwrap(rows[3].superlayer)
+        let expectedY = content.bounds.origin.y
+        canvas.update(track: browsingTrack(at: 0), lyrics: lyrics)
+        let initialY = content.bounds.origin.y
+        XCTAssertNotEqual(initialY, expectedY)
+
+        var seeks: [TimeInterval] = []
+        canvas.onSeek = { seeks.append($0) }
+        try browseToLastRow(in: canvas)
+        let browsedY = content.bounds.origin.y
+        XCTAssertGreaterThan(abs(initialY - browsedY), canvas.bounds.height * 3)
+        canvas.update(track: browsingTrack(at: 3), lyrics: lyrics)
+        XCTAssertEqual(content.bounds.origin.y, browsedY, accuracy: 1)
+
+        // Exercise the real debounce/timer path while paused. A new player sample
+        // has already arrived, so the return must use row 3 instead of row 0.
+        let timeout = ProcessInfo.processInfo.systemUptime + 6
+        while abs(content.bounds.origin.y - expectedY) > 1 && ProcessInfo.processInfo.systemUptime < timeout {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        XCTAssertEqual(content.bounds.origin.y, expectedY, accuracy: 1)
+        XCTAssertTrue(content.sublayers?.contains(rows[3]) == true)
+        XCTAssertFalse(rows[3].isHidden)
+        XCTAssertNil(content.animation(forKey: "lineScroll"))
+        XCTAssertTrue(seeks.isEmpty)
+    }
+
+    func testLongManualReturnShowsIntermediateLyricsAndCanBeInterrupted() throws {
+        _ = NSApplication.shared
+        let previous = UserDefaults.standard.object(forKey: "lyrics.smoothScrolling")
+        defer { UserDefaults.standard.set(previous, forKey: "lyrics.smoothScrolling") }
+        AppPreferences.smoothScrolling = true
+
+        let canvas = LyricsCanvasView(frame: NSRect(x: 0, y: 0, width: 360, height: 200))
+        defer { canvas.setWindowVisible(false) }
+        canvas.layoutSubtreeIfNeeded()
+        canvas.setWindowVisible(true)
+        canvas.update(track: browsingTrack(at: 0), lyrics: browsingDocument())
+        let rows = try XCTUnwrap(Mirror(reflecting: canvas).descendant("karaokeLayers") as? [CALayer])
+        let content = try XCTUnwrap(rows.first?.superlayer)
+        XCTAssertEqual(content.bounds.height, canvas.bounds.height)
+        let target = content.bounds.origin.y
+        try browseToLastRow(in: canvas)
+        let start = content.bounds.origin.y
+        XCTAssertGreaterThan(target - start, canvas.bounds.height * 3)
+        canvas.resumeAfterManualScroll()
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            XCTAssertEqual(content.bounds.origin.y, target, accuracy: 1)
+            XCTAssertNil(content.animation(forKey: "lineScroll"))
+            return
+        }
+        XCTAssertEqual(content.bounds.origin.y, start, accuracy: 1)
+        let frameStart = CACurrentMediaTime()
+        var previousY = start
+        var sawIntermediateLyrics = false
+        // Drive the display link's actual entry point. Even without a screen in CI,
+        // these frames exercise row preparation, clipping and the paused player clock.
+        for frame in 1...180 {
+            canvas.updateLayerPresentation(at: frameStart + Double(frame) / 60)
+            let y = content.bounds.origin.y
+            XCTAssertGreaterThanOrEqual(y, previousY - 0.5)
+            XCTAssertLessThanOrEqual(y, target + 0.5)
+            if y > start + canvas.bounds.height && y < target - canvas.bounds.height {
+                let visible = rows.filter {
+                    $0.superlayer === content && !$0.isHidden && $0.opacity > 0
+                        && $0.frame.intersects(content.bounds) && !($0.sublayers?.isEmpty ?? true)
+                }
+                XCTAssertFalse(visible.isEmpty, "The returning viewport must contain rendered lyric rows")
+                sawIntermediateLyrics = true
+            }
+            previousY = y
+        }
+        XCTAssertTrue(sawIntermediateLyrics)
+        XCTAssertEqual(content.bounds.origin.y, target, accuracy: 1)
+
+        try browseToLastRow(in: canvas)
+        canvas.resumeAfterManualScroll()
+        let nextStart = CACurrentMediaTime()
+        canvas.updateLayerPresentation(at: nextStart + 0.12)
+        let inFlight = content.bounds.origin.y
+        XCTAssertGreaterThan(inFlight, start + 1)
+        XCTAssertLessThan(inFlight, target - 1)
+        try browseToLastRow(in: canvas)
+        let interruptedY = content.bounds.origin.y
+        XCTAssertLessThan(interruptedY, inFlight)
+        canvas.updateLayerPresentation(at: nextStart + 2)
+        XCTAssertEqual(content.bounds.origin.y, interruptedY, accuracy: 1)
+    }
+
+    func testManualReturnRetargetsContinuouslyWhenTheSongAdvancesOneLine() throws {
+        _ = NSApplication.shared
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            throw XCTSkip("The system disables the return animation")
+        }
+        let previous = UserDefaults.standard.object(forKey: "lyrics.smoothScrolling")
+        defer { UserDefaults.standard.set(previous, forKey: "lyrics.smoothScrolling") }
+        AppPreferences.smoothScrolling = true
+        let canvas = LyricsCanvasView(frame: NSRect(x: 0, y: 0, width: 360, height: 200))
+        defer { canvas.setWindowVisible(false) }
+        let lyrics = browsingDocument()
+        canvas.layoutSubtreeIfNeeded()
+        canvas.setWindowVisible(true)
+        canvas.update(track: browsingTrack(at: 1), lyrics: lyrics)
+        let rows = try XCTUnwrap(Mirror(reflecting: canvas).descendant("karaokeLayers") as? [CALayer])
+        let content = try XCTUnwrap(rows[1].superlayer)
+        let nextLineY = content.bounds.origin.y
+        canvas.update(track: browsingTrack(at: 0), lyrics: lyrics)
+        let firstLineY = content.bounds.origin.y
+
+        try browseToLastRow(in: canvas)
+        let startY = content.bounds.origin.y
+        canvas.update(track: TrackInfo(title: "Manual browse", artist: "", album: "", duration: 360,
+                                       position: 4.75, state: .playing), lyrics: lyrics)
+        let sampledAt = try XCTUnwrap(Mirror(reflecting: canvas).descendant("sampledAt") as? CFTimeInterval)
+        canvas.resumeAfterManualScroll()
+
+        // The production player clock crosses the 5-second timestamp during the return.
+        let boundary = sampledAt + 0.25
+        canvas.updateLayerPresentation(at: boundary - 0.001)
+        let first = content.bounds.origin.y
+        canvas.updateLayerPresentation(at: boundary - 0.00001)
+        let before = content.bounds.origin.y
+        XCTAssertGreaterThan(before, startY + 1)
+        XCTAssertLessThan(before, nextLineY - 1)
+        canvas.updateLayerPresentation(at: boundary + 0.00001)
+        let after = content.bounds.origin.y
+        XCTAssertEqual(after, before, accuracy: 0.5, "Changing the target row should not jump the viewport")
+        canvas.updateLayerPresentation(at: boundary + 0.001)
+        let last = content.bounds.origin.y
+        XCTAssertGreaterThan(before - first, 0)
+        XCTAssertEqual(last - after, before - first, accuracy: max(0.08, (before - first) * 0.15),
+                       "The viewport should carry its velocity across a changing playback target")
+
+        for frame in 1...120 { canvas.updateLayerPresentation(at: boundary + Double(frame) / 60) }
+        XCTAssertNotEqual(firstLineY, nextLineY)
+        XCTAssertEqual(content.bounds.origin.y, nextLineY, accuracy: 1)
+        XCTAssertFalse(rows[1].isHidden)
+    }
+
+    func testLineTimedNetEaseHarmonyStaysVisibleWithTheLead() throws {
+        _ = NSApplication.shared
+        let payload = try JSONDecoder().decode(NetEaseLyricParser.Payload.self, from: Data(
+            #"{ "code": 200, "lrc": { "lyric": "[00:01]Lead\n[00:01]（Echo）\n[00:04]Next" } }"#.utf8
+        ))
+        let lyrics = NetEaseLyricParser.document(payload, artworkURL: nil)
+        let canvas = LyricsCanvasView(frame: NSRect(x: 0, y: 0, width: 360, height: 200))
+        let track = TrackInfo(title: "Harmony", artist: "", album: "", duration: 8,
+                              position: 2, state: .paused, source: .netease)
+        canvas.update(track: track, lyrics: lyrics)
+        let rows = try XCTUnwrap(Mirror(reflecting: canvas).descendant("karaokeLayers") as? [CALayer])
+        XCTAssertEqual(rows.count, 3)
+        XCTAssertEqual(rows.map { $0.anchorPoint.x }, [1, 0, 0])
+        XCTAssertEqual(rows[0].opacity, 1)
+        XCTAssertEqual(rows[1].opacity, 1)
+    }
+
+    func testParenthesizedPartnerHarmonyRendersOnTheRight() throws {
+        _ = NSApplication.shared
+        let words = [LyricWord(text: "（回声）", start: 2, end: 4)]
+        let lead = LyricLine(time: 1, text: "Partner", vocalRole: .partner)
+        let harmony = LyricLine(time: 2, text: "（回声）", words: words, translation: "Echo", vocalRole: .partnerHarmony)
+        let lyrics = LyricsDocument(lines: [lead, harmony], plainText: nil, source: "Test", isSynced: true,
+                                    wordTiming: .exact)
+        let canvas = LyricsCanvasView(frame: NSRect(x: 0, y: 0, width: 360, height: 200))
+        canvas.update(track: TrackInfo(title: "Test", artist: "", album: "", duration: 5, position: 3,
+                                           state: .paused), lyrics: lyrics)
+        let rows = try XCTUnwrap(Mirror(reflecting: canvas).descendant("karaokeLayers") as? [CALayer])
+        XCTAssertEqual(rows.map { $0.anchorPoint.x }, [1, 1])
+        let glyph = try XCTUnwrap(rows[1].sublayers?.compactMap { $0.sublayers?.last }.first)
+        XCTAssertGreaterThan(glyph.frame.minX, rows[1].bounds.width / 2)
+    }
+
+    func testHarmonyTailUsesTheSelectedPlayersFocusRule() throws {
+        _ = NSApplication.shared
+        let lead = LyricLine(time: 1, text: "Lead", words: [.init(text: "Lead", start: 1, end: 2)],
+                             harmonies: [LyricHarmony(time: 1.5, words: [.init(text: "Echo", start: 1.5, end: 3)])])
+        let lyrics = LyricsDocument(lines: [lead, LyricLine(time: 4, text: "Next")], plainText: nil,
+                                    source: "Test", isSynced: true, wordTiming: .exact)
+        let canvas = LyricsCanvasView(frame: NSRect(x: 0, y: 0, width: 360, height: 200))
+        func show(at position: TimeInterval, source: PlaybackSource) {
+            let track = TrackInfo(title: "Harmony", artist: "", album: "", duration: 8,
+                                  position: position, state: .paused, source: source)
+            canvas.update(track: track, lyrics: lyrics)
+        }
+        func focus() -> Int? {
+            Mirror(reflecting: canvas).descendant("visualScrollIndex") as? Int
+        }
+        show(at: 1.75, source: .netease)
+        XCTAssertEqual(focus(), 0)
+        show(at: 2.6, source: .netease)
+        XCTAssertEqual(focus(), 0)
+        show(at: 4.1, source: .netease)
+        XCTAssertEqual(focus(), 2)
+
+        show(at: 1.75, source: .appleMusic)
+        XCTAssertEqual(focus(), 0)
+        show(at: 2.6, source: .appleMusic)
+        XCTAssertEqual(focus(), 1)
+        show(at: 4.1, source: .appleMusic)
+        XCTAssertEqual(focus(), 2)
+    }
+
+    func testCanvasUsesCalibratedPositionAndRateFromTheOriginalSampleTime() {
+        _ = NSApplication.shared
+        let canvas = LyricsCanvasView(frame: NSRect(x: 0, y: 0, width: 360, height: 200))
+        let lyrics = LyricsDocument(lines: [LyricLine(time: 0, text: "First"), LyricLine(time: 4.75, text: "Second")],
+                                    plainText: nil, source: "Test", isSynced: true, wordTiming: .none)
+        let now = CACurrentMediaTime()
+        let track = TrackInfo(title: "Song", artist: "", album: "", duration: 10,
+                              position: 0.5, state: .playing, source: .netease,
+                              positionSampledAt: now - 4, positionRate: 1.12)
+        canvas.update(track: track, lyrics: lyrics)
+        XCTAssertEqual(Mirror(reflecting: canvas).descendant("activeIndex") as? Int, 1)
+
+        // A confirmed backward seek supplies a new anchor and is still rendered.
+        let sought = TrackInfo(title: "Song", artist: "", album: "", duration: 10,
+                               position: 0.4, state: .playing, source: .netease, positionSampledAt: CACurrentMediaTime())
+        canvas.update(track: sought, lyrics: lyrics)
+        XCTAssertEqual(Mirror(reflecting: canvas).descendant("activeIndex") as? Int, 0)
     }
 
     func testFloatingLyricsReusesTheWakeTimerUntilPlaybackStops() throws {
@@ -837,12 +1285,15 @@ final class FloatingLyricsWindowTests: XCTestCase {
         _ = NSApplication.shared
         let originalMode = AppPreferences.floatingLyricsMode
         let originalLock = AppPreferences.floatingPositionLocked
+        let originalSize = AppPreferences.floatingLyricsVinylSize
         defer {
             AppPreferences.floatingLyricsMode = originalMode
             AppPreferences.floatingPositionLocked = originalLock
+            AppPreferences.floatingLyricsVinylSize = originalSize
         }
         AppPreferences.floatingLyricsMode = .vinyl
         AppPreferences.floatingPositionLocked = true
+        AppPreferences.floatingLyricsVinylSize = FloatingLyricsMode.minimumVinylSize
         let controller = FloatingLyricsController()
         let fields = Mirror(reflecting: controller).children
         let panel = try XCTUnwrap(fields.first { $0.label == "panel" }?.value as? NSPanel)
@@ -857,6 +1308,7 @@ final class FloatingLyricsWindowTests: XCTestCase {
         XCTAssertTrue(child.parent === panel)
         XCTAssertTrue(panel.ignoresMouseEvents)
         XCTAssertFalse(child.ignoresMouseEvents)
+        XCTAssertTrue(panel.frame.contains(child.frame))
         XCTAssertEqual(child.frame, panel.convertToScreen(vinyl.convert(vinyl.needleButtonFrame, to: nil)).integral)
         XCTAssertLessThan(child.frame.width, vinyl.frame.width)
         let pivot = try XCTUnwrap(Mirror(reflecting: vinyl).children.first { $0.label == "pivot" }?.value as? CAShapeLayer)
@@ -885,15 +1337,19 @@ final class FloatingLyricsWindowTests: XCTestCase {
         _ = NSApplication.shared
         let originalMode = AppPreferences.floatingLyricsMode
         let originalLock = AppPreferences.floatingPositionLocked
+        let originalSize = AppPreferences.floatingLyricsSize(for: .minimal)
         defer {
             AppPreferences.floatingLyricsMode = originalMode
             AppPreferences.floatingPositionLocked = originalLock
+            AppPreferences.setFloatingLyricsSize(originalSize, for: .minimal)
         }
         AppPreferences.floatingLyricsMode = .minimal
         AppPreferences.floatingPositionLocked = true
+        AppPreferences.setFloatingLyricsSize(FloatingLyricsMode.minimal.minimumSize, for: .minimal)
         let controller = FloatingLyricsController()
         let fields = Mirror(reflecting: controller).children
         let panel = try XCTUnwrap(fields.first { $0.label == "panel" }?.value as? NSPanel)
+        let canvas = try XCTUnwrap(fields.first { $0.label == "canvas" }?.value as? NSView)
         let controls = try XCTUnwrap(fields.first { $0.label == "controls" }?.value as? PlaybackControls)
         let controlFields = Mirror(reflecting: controls).children
         let playButton = try XCTUnwrap(controlFields.first { $0.label == "play" }?.value as? ActionButton)
@@ -909,7 +1365,10 @@ final class FloatingLyricsWindowTests: XCTestCase {
         XCTAssertTrue(child.parent === panel)
         XCTAssertTrue(panel.ignoresMouseEvents)
         XCTAssertFalse(child.ignoresMouseEvents)
-        XCTAssertEqual(child.frame.size, NSSize(width: controls.width, height: 34))
+        XCTAssertEqual(panel.frame.size, FloatingLyricsMode.minimal.minimumSize)
+        XCTAssertTrue(panel.frame.contains(child.frame))
+        XCTAssertGreaterThanOrEqual(canvas.frame.height, 70)
+        XCTAssertFalse(panel.convertToScreen(canvas.convert(canvas.bounds, to: nil)).intersects(child.frame))
 
         var togglePresses = 0
         var prevPresses = 0
@@ -1050,5 +1509,77 @@ final class FloatingLyricsWindowTests: XCTestCase {
         let rebuiltUnits = try XCTUnwrap(firstRow.sublayers)
         let rebuiltGlyphs = try rebuiltUnits.map { try XCTUnwrap($0.sublayers?.last) }
         XCTAssertTrue(rebuiltGlyphs.allSatisfy { !$0.isHidden && $0.mask == nil })
+    }
+
+    func testRepeatedPauseSkipsRenderingButSeekAndClockResetStillApply() throws {
+        _ = NSApplication.shared
+        let canvas = LyricsCanvasView(frame: NSRect(x: 0, y: 0, width: 320, height: 200))
+        let lyrics = LyricsDocument(lines: [LyricLine(time: 0, text: "First"), LyricLine(time: 3, text: "Second")],
+                                    plainText: nil, source: "test", isSynced: true, wordTiming: .none)
+        func update(time: TimeInterval, position: TimeInterval, canSeek: Bool = true) {
+            let track = TrackInfo(title: "Test", artist: "", album: "", duration: 20, position: position,
+                                  state: .paused, canSeek: canSeek, positionSampledAt: time)
+            canvas.update(track: track, lyrics: lyrics)
+        }
+        func lastSample() -> TimeInterval? {
+            Mirror(reflecting: canvas).descendant("sampledAt") as? TimeInterval
+        }
+
+        update(time: 10, position: 1)
+        canvas.layoutSubtreeIfNeeded()
+        update(time: 11, position: 1)
+        XCTAssertEqual(lastSample(), 10)
+
+        update(time: 12, position: 4)
+        let fields = Mirror(reflecting: canvas)
+        XCTAssertEqual(fields.descendant("visualActiveIndex") as? Int, 1)
+        XCTAssertEqual(lastSample(), 12)
+
+        update(time: 13, position: 4, canSeek: false)
+        XCTAssertEqual(lastSample(), 13)
+        canvas.resetPlaybackClock()
+        update(time: 14, position: 4, canSeek: false)
+        XCTAssertEqual(lastSample(), 14)
+    }
+
+    func testSteadyKaraokePlaybackUsesServerSideSweepWithoutDisplayLinkAndFreezesOnPause() throws {
+        _ = NSApplication.shared
+        let canvas = LyricsCanvasView(frame: NSRect(x: 0, y: 0, width: 320, height: 200))
+        defer { canvas.setWindowVisible(false) }
+        let lyrics = LyricsDocument(
+            lines: [
+                LyricLine(time: 1, text: "Hello", words: [LyricWord(text: "Hello", start: 1, end: 3)]),
+                LyricLine(time: 5, text: "World", words: [LyricWord(text: "World", start: 5, end: 7)])
+            ],
+            plainText: nil,
+            source: "test",
+            isSynced: true,
+            wordTiming: .exact
+        )
+        let playingTrack = TrackInfo(title: "Test", artist: "", album: "", duration: 20, position: 1.2, state: .playing)
+        canvas.setWindowVisible(true)
+        canvas.update(track: playingTrack, lyrics: lyrics)
+
+        let displayLinkObj = Mirror(reflecting: canvas).descendant("displayLink")
+        if let link = displayLinkObj.flatMap({ Mirror(reflecting: $0).descendant("displayLink") as? NSObject }),
+           let paused = link.value(forKey: "paused") as? Bool {
+            XCTAssertTrue(paused)
+        }
+        XCTAssertNotNil(Mirror(reflecting: canvas).descendant("displayLinkResumeTimer") as? Timer)
+
+        let rows = try XCTUnwrap(Mirror(reflecting: canvas).descendant("karaokeLayers") as? [CALayer])
+        let firstGlyph = try XCTUnwrap(rows.first?.sublayers?.first?.sublayers?.last)
+        let mask = try XCTUnwrap(firstGlyph.mask)
+        let wipeLayer = try XCTUnwrap(mask.sublayers?.first)
+        XCTAssertNotNil(wipeLayer.animation(forKey: "karaokeSweep"))
+
+        let pausedTrack = TrackInfo(title: "Test", artist: "", album: "", duration: 20, position: 1.5, state: .paused)
+        canvas.update(track: pausedTrack, lyrics: lyrics)
+        XCTAssertNil(wipeLayer.animation(forKey: "karaokeSweep"))
+
+        canvas.update(track: playingTrack, lyrics: lyrics)
+        XCTAssertNotNil(wipeLayer.animation(forKey: "karaokeSweep"))
+        canvas.setWindowVisible(false)
+        XCTAssertNil(wipeLayer.animation(forKey: "karaokeSweep"))
     }
 }

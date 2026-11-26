@@ -22,20 +22,41 @@ struct TrackInfo: Equatable, Sendable {
     let album: String
     let duration: TimeInterval
     let position: TimeInterval
+    /// A calibrated position's origin in Core Animation's monotonic clock.
+    let positionSampledAt: TimeInterval?
+    /// Rate of the estimated position between calibrated samples.
+    let positionRate: Double
     let state: PlayerState
     let bpm: Int?
+    let source: PlaybackSource
+    let sourceTrackID: String?
+    let artworkURL: URL?
+    let canSeek: Bool
     let identityKey: String
 
     init(title: String, artist: String, album: String, duration: TimeInterval,
-         position: TimeInterval, state: PlayerState, bpm: Int? = nil) {
+         position: TimeInterval, state: PlayerState, bpm: Int? = nil,
+         source: PlaybackSource = .appleMusic, sourceTrackID: String? = nil, artworkURL: URL? = nil,
+         canSeek: Bool = true, positionSampledAt: TimeInterval? = nil, positionRate: Double = 1) {
         self.title = title
         self.artist = artist
         self.album = album
         self.duration = duration
         self.position = position
+        self.positionSampledAt = positionSampledAt
+        self.positionRate = positionRate
         self.state = state
         self.bpm = bpm
-        identityKey = "\(artist.lowercased())|\(title.lowercased())|\(album.lowercased())|\(Int(duration.rounded()))"
+        self.source = source
+        self.sourceTrackID = sourceTrackID
+        self.artworkURL = artworkURL
+        self.canSeek = canSeek
+        let metadataKey = "\(artist.lowercased())|\(title.lowercased())|\(album.lowercased())|\(Int(duration.rounded()))"
+        // Preserve existing Apple Music translation and artwork cache keys.
+        switch source {
+        case .appleMusic: identityKey = metadataKey
+        case .netease: identityKey = "netease:" + (sourceTrackID.map { "id:\($0)" } ?? "metadata:\(metadataKey)")
+        }
     }
 
     var displayName: String {
@@ -88,6 +109,7 @@ struct LyricLine: Equatable, Sendable, Identifiable {
     let isGap: Bool
     let isMachineTranslation: Bool
     let vocalRole: LyricVocalRole
+    let isRightAligned: Bool
     let harmonies: [LyricHarmony]
 
     var hasPreferredOriginalTranslation: Bool {
@@ -107,6 +129,7 @@ struct LyricLine: Equatable, Sendable, Identifiable {
         isGap: Bool = false,
         isMachineTranslation: Bool = false,
         vocalRole: LyricVocalRole = .lead,
+        isRightAligned: Bool? = nil,
         harmonies: [LyricHarmony] = []
     ) {
         self.id = "\(time)-\(text.hashValue)"
@@ -120,6 +143,7 @@ struct LyricLine: Equatable, Sendable, Identifiable {
         self.isGap = isGap
         self.isMachineTranslation = isMachineTranslation
         self.vocalRole = vocalRole
+        self.isRightAligned = isRightAligned ?? vocalRole.isRightAligned
         self.harmonies = harmonies
     }
 
@@ -134,11 +158,23 @@ struct LyricLine: Equatable, Sendable, Identifiable {
             && lhs.isGap == rhs.isGap
             && lhs.isMachineTranslation == rhs.isMachineTranslation
             && lhs.vocalRole == rhs.vocalRole
+            && lhs.isRightAligned == rhs.isRightAligned
             && lhs.harmonies == rhs.harmonies
     }
 
     var endTime: TimeInterval {
         words.last?.end ?? time
+    }
+
+    static func isParenthesizedVocal(_ text: some StringProtocol) -> Bool {
+        !harmonyBracketOffsets(in: text).isEmpty && text.contains(where: \.isLetter)
+    }
+
+    static func trailingParenthesizedVocalStart(in text: String) -> String.Index? {
+        text.indices.first { index in
+            let character = text[index]
+            return (character == "(" || character == "（") && isParenthesizedVocal(text[index...])
+        }
     }
 
     fileprivate func hidingHarmonyBrackets() -> Self {
@@ -165,35 +201,40 @@ struct LyricLine: Equatable, Sendable, Identifiable {
         return Self(time: time, text: displayText, words: displayWords, translation: translation,
                     transliteration: transliteration, confirmedEnd: confirmedEnd,
                     translationLanguage: translationLanguage, isGap: isGap,
-                    isMachineTranslation: isMachineTranslation, vocalRole: vocalRole, harmonies: harmonies)
+                    isMachineTranslation: isMachineTranslation, vocalRole: vocalRole,
+                    isRightAligned: true, harmonies: harmonies)
     }
 
-    private static func harmonyBracketOffsets(in text: String) -> Set<Int> {
+    private static func harmonyBracketOffsets(in text: some StringProtocol) -> Set<Int> {
         var expectedClosers: [Unicode.Scalar] = []
         var offsets = Set<Int>()
+        var hasTrailingPunctuation = false
         for (offset, scalar) in text.unicodeScalars.enumerated() {
             switch scalar {
             case "(", "（":
-                if expectedClosers.isEmpty { offsets.insert(offset) }
+                if expectedClosers.isEmpty {
+                    guard !hasTrailingPunctuation else { return [] }
+                    offsets.insert(offset)
+                }
                 expectedClosers.append(scalar == "(" ? ")" : "）")
             case ")", "）":
                 guard expectedClosers.popLast() == scalar else { return [] }
                 if expectedClosers.isEmpty { offsets.insert(offset) }
             default:
-                // A wrapped harmony can consist of several parenthesized groups.
-                if expectedClosers.isEmpty, !CharacterSet.whitespacesAndNewlines.contains(scalar) { return [] }
+                guard expectedClosers.isEmpty, !CharacterSet.whitespacesAndNewlines.contains(scalar),
+                      scalar.properties.generalCategory != .format else { continue }
+                guard !offsets.isEmpty, CharacterSet.punctuationCharacters.contains(scalar) else { return [] }
+                hasTrailingPunctuation = true
             }
         }
         return expectedClosers.isEmpty ? offsets : []
     }
 }
 
-enum WordTimingQuality: String, Equatable, Sendable, Codable {
+enum WordTimingQuality: String, Equatable, Sendable {
     /// No per-word data.
     case none
-    /// Synthesized from line LRC timestamps.
-    case estimated
-    /// Exact timings from Apple Music word-timed TTML.
+    /// Word or syllable timestamps supplied by the lyrics source.
     case exact
 }
 
@@ -278,7 +319,7 @@ enum AppStatus: Equatable, Sendable {
     case stopped
     case loadingLyrics(TrackInfo)
     case showing(track: TrackInfo, lyrics: LyricsDocument, currentLine: String)
-    case noLyrics(TrackInfo)
+    case noLyrics(TrackInfo, cacheAccessDenied: Bool = false)
     case error(String)
 }
 
@@ -346,7 +387,7 @@ extension LyricsDocument {
 extension AppStatus {
     var track: TrackInfo? {
         switch self {
-        case .loadingLyrics(let track), .noLyrics(let track), .showing(let track, _, _): return track
+        case .loadingLyrics(let track), .noLyrics(let track, _), .showing(let track, _, _): return track
         default: return nil
         }
     }

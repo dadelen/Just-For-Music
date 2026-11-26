@@ -9,7 +9,7 @@ https://github.com/user-attachments/assets/425befea-16e8-4ab0-81e0-11004ee798d1
 
 
 
-A macOS menu bar companion for Apple Music with synced lyrics, playback controls, and a floating lyrics window. [Download for Apple Silicon](https://github.com/dadelen/Just-For-Music/releases/latest) · [Changelog](CHANGELOG.md)
+A macOS menu bar companion for Apple Music and NetEase Cloud Music with synced lyrics, playback controls, and a floating lyrics window. [Download for Apple Silicon](https://github.com/dadelen/Just-For-Music/releases/latest) · [Changelog](CHANGELOG.md)
 
 **Usage recommendation** A desktop or external monitor is recommended.
 
@@ -18,10 +18,10 @@ The existing read-only Music cache provider, TTML parser and playback monitor re
 - Automatic and Icon Only status bar modes. Automatic shows scrolling original karaoke lyrics and three native status bar playback buttons.
 - While floating lyrics are visible, only the three playback buttons appear in the status bar. Option-click a playback button to open the player panel.
 - A rounded player panel with real artwork, track details and a seek bar. Its text buttons open Lyrics and Settings or quit the app.
-- An independent settings window for Desktop Lyrics, Menu Bar, Lyric Effects, Translation, and Maintenance.
+- Click a player card in Settings → Playback Source (播放来源). Apple Music is the default and the app remembers the selection.
 - A system-glass floating panel: rotating vinyl on the left, original lyrics and smaller translations on the right. No custom background tint.
 - The lyrics panel background defaults to 100% transparency and can be adjusted in Settings. Lyric fading and blur are independent of background transparency.
-- Red, yellow and green controls close the panel, lock its position and choose Vinyl or Minimal. Drag the unlocked Vinyl panel's edges or corners to adjust its width and height independently, from 640 × 260 pt up to the current display's available area. Its size and position are saved. Minimal mode places the track details and playback controls above the lyrics.
+- Red, yellow and green controls close the panel, lock its position and choose Vinyl or Minimal. Settings → Desktop Lyrics (桌面歌词) lets you adjust the panel width and height independently. The lyrics scale with the panel. You can also drag the edges or corners of an unlocked panel. Vinyl and Minimal remember their own sizes and fit the current display. Minimal mode places the track details and playback controls above the lyrics.
 - When locked, the window buttons and tonearm control stay interactive while the rest of the panel passes clicks through. Click the yellow button to unlock.
 - A softly lit vinyl record that turns once every 12 beats, or every six seconds when BPM is unavailable. The record keeps its angle when paused. Click the tonearm to play or pause.
 - Left-aligned lyrics emphasize the current line and soften nearby lines. Playback follow resumes four seconds after the last manual scroll.
@@ -54,11 +54,17 @@ open "dist/Just-For-Music.app"
 
 The default bundle identifier is `io.github.dadelen.just-for-music`.
 
-Allow Music automation when prompted. Open the lyrics panel in Music first to populate its cache. Local translation uses installed system language packs. Download any missing packs in System Settings → General → Language & Region → Translation Languages, then recheck in the app’s Translation settings.
+Allow Music automation in Settings → Playback Source (播放来源) on first use. If macOS blocks access to the lyric cache, check Media & Apple Music in System Settings → Privacy & Security. Open the lyrics panel in Music to populate its cache. Local translation uses installed system language packs. Download any missing packs in System Settings → General → Language & Region → Translation Languages, then recheck in the app’s Translation settings.
 
 Online model translation is temporarily disabled. Saved configurations are retained.
 
 The app reads Music's private cache format at `~/Library/Caches/com.apple.Music/`. Format changes, cache eviction, unavailable lyrics and imported local tracks can prevent lyric retrieval. No account tokens are extracted. Multi-character TTML spans use interpolated highlighting within their supplied timing.
+
+Select NetEase in Settings → Playback Source and play a song in NetEase. The app follows the client's saved track ID and playback position, including when its window is closed. The client reports whole seconds, and the next report corrects the clock after a seek. NetEase 3.1.13 accepts playback, track changes and seeking through its own command handler. Lyrics and artwork are looked up by song ID when available. [Local playback format reference](https://github.com/DigHuang/SoftLive/blob/main/docs/subsystems/netease.md)
+
+Earlier NetEase releases can use the player's Accessibility menu for playback controls. If playback progress is unavailable, play or change a song in NetEase so the client writes a new playback record.
+
+The floating lyrics use the parenthesis convention to display backing vocals from NetEase. YRC backing vocals retain their word timings. When the source labels both singers by their credited names or uses male and female verse labels, the floating lyrics align the two parts left and right. [Lyric format reference](https://amll.dev/en/guides/lyric/formats)
 
 Automatic mode chooses a conservative width, and Icon Only mode is available when space is limited. The system can still hide a status item.
 

@@ -14,8 +14,8 @@ RESOURCES="$CONTENTS/Resources"
 HELPERS="$CONTENTS/Helpers"
 ENTITLEMENTS="$ROOT/AppleMusicLyrics.entitlements"
 APP_ICON="$ROOT/Resources/AppIcon.icns"
-VERSION="${VERSION:-1.1.0}"
-BUILD_NUMBER="${BUILD_NUMBER:-25}"
+VERSION="${VERSION:-1.2.0}"
+BUILD_NUMBER="${BUILD_NUMBER:-43}"
 CODESIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
 BUNDLE_IDENTIFIER="${BUNDLE_IDENTIFIER:-io.github.dadelen.just-for-music}"
 UPDATE_REPOSITORY="${UPDATE_REPOSITORY-dadelen/Just-For-Music}"
@@ -110,6 +110,8 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
   <true/>
   <key>NSAppleEventsUsageDescription</key>
   <string>Just-For-Music reads the current track and controls playback in the Music app.</string>
+  <key>NSAppleMusicUsageDescription</key>
+  <string>Just-For-Music reads the Music app’s locally cached lyrics for the current track.</string>
   <key>NSHighResolutionCapable</key>
   <true/>
 </dict>
