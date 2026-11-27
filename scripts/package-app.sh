@@ -5,7 +5,9 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 "$ROOT/scripts/check-build-sdk.sh"
 
-APP_NAME="Just-For-Music"
+APP_NAME="VerseMotion"
+# Retain the executable name used by older builds for instance handoff.
+EXECUTABLE_NAME="Just-For-Music"
 DIST="$ROOT/dist"
 APP="$DIST/$APP_NAME.app"
 CONTENTS="$APP/Contents"
@@ -14,8 +16,8 @@ RESOURCES="$CONTENTS/Resources"
 HELPERS="$CONTENTS/Helpers"
 ENTITLEMENTS="$ROOT/AppleMusicLyrics.entitlements"
 APP_ICON="$ROOT/Resources/AppIcon.icns"
-VERSION="${VERSION:-1.2.0}"
-BUILD_NUMBER="${BUILD_NUMBER:-43}"
+VERSION="${VERSION:-1.2.1}"
+BUILD_NUMBER="${BUILD_NUMBER:-44}"
 CODESIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
 BUNDLE_IDENTIFIER="${BUNDLE_IDENTIFIER:-io.github.dadelen.just-for-music}"
 UPDATE_REPOSITORY="${UPDATE_REPOSITORY-dadelen/Just-For-Music}"
@@ -70,12 +72,12 @@ done
 echo "→ Assembling $APP"
 rm -rf "$APP"
 mkdir -p "$MACOS" "$RESOURCES" "$HELPERS"
-cp "$BIN" "$MACOS/$APP_NAME"
+cp "$BIN" "$MACOS/$EXECUTABLE_NAME"
 cp "$HELPER_BIN" "$HELPERS/AppleMusicLyricsPlaybackHelper"
 cp "$APP_ICON" "$RESOURCES/AppIcon.icns"
 cp "$ROOT/LICENSE" "$RESOURCES/LICENSE"
 cp "$ROOT/Resources/InstallGuide.txt" "$RESOURCES/InstallGuide.txt"
-chmod +x "$MACOS/$APP_NAME" "$HELPERS/AppleMusicLyricsPlaybackHelper"
+chmod +x "$MACOS/$EXECUTABLE_NAME" "$HELPERS/AppleMusicLyricsPlaybackHelper"
 
 cat > "$CONTENTS/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -93,9 +95,9 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
-  <string>Just-For-Music</string>
+  <string>VerseMotion</string>
   <key>CFBundleDisplayName</key>
-  <string>Just-For-Music</string>
+  <string>VerseMotion</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
@@ -109,9 +111,9 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
   <key>JFMSupportsInstanceHandoff</key>
   <true/>
   <key>NSAppleEventsUsageDescription</key>
-  <string>Just-For-Music reads the current track and controls playback in the Music app.</string>
+  <string>VerseMotion reads the current track and controls playback in the Music app.</string>
   <key>NSAppleMusicUsageDescription</key>
-  <string>Just-For-Music reads the Music app’s locally cached lyrics for the current track.</string>
+  <string>VerseMotion reads the Music app’s locally cached lyrics for the current track.</string>
   <key>NSHighResolutionCapable</key>
   <true/>
 </dict>

@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for contributing to Just-For-Music.
+Thanks for contributing to VerseMotion.
 
 ## Development Setup
 

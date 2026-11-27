@@ -6,7 +6,7 @@ cd "$ROOT"
 
 VERSION="${VERSION:-${1:-}}"
 BUILD_NUMBER="${BUILD_NUMBER:-1}"
-APP_NAME="Just-For-Music"
+APP_NAME="VerseMotion"
 ARTIFACT_DIR="$ROOT/dist/release"
 STAGING_DIR="$ROOT/dist/dmg-staging"
 

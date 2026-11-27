@@ -1,11 +1,13 @@
 import AppKit
 
 #if !arch(arm64)
-#error("Just-For-Music requires Apple silicon (arm64).")
+#error("VerseMotion requires Apple silicon (arm64).")
 #endif
 
 enum AppIdentity {
-    static let name = "Just-For-Music"
+    static let name = "VerseMotion"
+    // Keep the executable name stable so 1.2.0 and newer builds can hand off.
+    static let executableName = "Just-For-Music"
     static let bundleIdentifier = "io.github.dadelen.just-for-music"
 }
 
@@ -55,7 +57,7 @@ enum AppleMusicLyricsApp {
         guard let identifier = Bundle.main.bundleIdentifier else { return false }
         return app.bundleIdentifier == identifier && !app.isTerminated
             && app.processIdentifier != ProcessInfo.processInfo.processIdentifier
-            && app.executableURL?.lastPathComponent == AppIdentity.name
+            && app.executableURL?.lastPathComponent == AppIdentity.executableName
     }
 
     private static func launchedLater(_ app: NSRunningApplication, than other: NSRunningApplication) -> Bool {

@@ -58,7 +58,7 @@ NSColor(calibratedWhite: 0.965, alpha: 1).setFill()
 NSBezierPath(rect: NSRect(origin: .zero, size: canvasSize)).fill()
 
 drawCentered(
-    "安装 Just-For-Music",
+    "安装 VerseMotion",
     y: 440,
     font: .systemFont(ofSize: 24, weight: .semibold),
     color: .labelColor
@@ -93,7 +93,7 @@ drawCentered(
     width: 612
 )
 drawCentered(
-    "歌词无法读取：系统设置 › 隐私与安全性 › 自动化 › Just-For-Music › Music",
+    "歌词无法读取：系统设置 › 隐私与安全性 › 自动化 › VerseMotion › Music",
     y: 84,
     font: .systemFont(ofSize: 11, weight: .regular),
     color: .secondaryLabelColor,

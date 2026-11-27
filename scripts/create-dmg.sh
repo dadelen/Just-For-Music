@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="${1:-}"
 VERSION="${2:-}"
 OUTPUT_DMG="${3:-}"
-APP_NAME="Just-For-Music"
+APP_NAME="VerseMotion"
 BACKGROUND_GENERATOR="$ROOT/scripts/generate-dmg-background.swift"
 INSTALL_GUIDE="$ROOT/Resources/InstallGuide.txt"
 

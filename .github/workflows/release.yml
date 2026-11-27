@@ -82,5 +82,5 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             dist/release/* \
             --verify-tag \
-            --title "Just-For-Music ${GITHUB_REF_NAME#v}" \
+            --title "VerseMotion ${GITHUB_REF_NAME#v}" \
             --generate-notes

@@ -3,7 +3,7 @@ import CoreServices
 import Foundation
 
 #if !arch(arm64)
-#error("Just-For-Music playback helper requires Apple silicon (arm64).")
+#error("VerseMotion playback helper requires Apple silicon (arm64).")
 #endif
 
 private struct Response: Codable {

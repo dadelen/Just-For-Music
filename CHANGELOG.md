@@ -1,4 +1,9 @@
-# Just-For-Music 更新记录
+# VerseMotion 更新记录
+
+## 1.2.1 · 2026-11-27
+
+- 应用从 Just-For-Music 更名为 VerseMotion，换用深松灰液态玻璃歌词图标。
+- 从 1.2.0 升级时，将 VerseMotion.app 拖到「应用程序」。新版使用原有应用标识，可以继续读取原先的设置。确认新版能正常打开后，可移走旧的 Just-For-Music.app。
 
 ## 1.2.0 · 2026-11-26
 

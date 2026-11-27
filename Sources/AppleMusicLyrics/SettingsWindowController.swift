@@ -468,7 +468,7 @@ private struct SettingsView: View {
                     .disabled(actions.requestingAppleMusicAutomation)
             }
             if actions.appleMusicCacheAccess == .denied {
-                note("macOS 拒绝读取音乐的本地歌词缓存。请在「隐私与安全性 → 媒体与 Apple Music」中允许 Just-For-Music。")
+                note("macOS 拒绝读取音乐的本地歌词缓存。请在「隐私与安全性 → 媒体与 Apple Music」中允许 \(AppIdentity.name)。")
                 if let settings = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy") {
                     Link("打开隐私与安全性设置", destination: settings)
                 }

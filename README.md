@@ -1,4 +1,4 @@
-# Just-For-Music
+# VerseMotion
 
 English | [简体中文](README.zh-CN.md)
 
@@ -49,7 +49,7 @@ Reduce Transparency uses an opaque system background. Reduce Motion suppresses d
 ```bash
 swift test
 ./scripts/package-app.sh
-open "dist/Just-For-Music.app"
+open "dist/VerseMotion.app"
 ```
 
 The default bundle identifier is `io.github.dadelen.just-for-music`.
@@ -92,4 +92,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for integration tests and constraints, [r
 
 Maintained by [dadelen](https://github.com/dadelen). Based on [Takpap/apple-music-lyrics](https://github.com/Takpap/apple-music-lyrics), with thanks to Takpap and the original contributors. The original copyright notice and [MIT License](LICENSE) are retained.
 
-Just-For-Music is an independent project. Apple does not sponsor or endorse it. Apple, Apple Music, and macOS are trademarks of Apple Inc. Lyrics, artwork, and other Music content belong to their respective rights holders. The project's MIT license applies to the software.
+VerseMotion is an independent project. Apple does not sponsor or endorse it. Apple, Apple Music, and macOS are trademarks of Apple Inc. Lyrics, artwork, and other Music content belong to their respective rights holders. The project's MIT license applies to the software.

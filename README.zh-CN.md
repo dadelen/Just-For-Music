@@ -1,8 +1,8 @@
-# Just-For-Music
+# VerseMotion
 
 [English](README.md) | 简体中文
 
-<img src="Resources/AppIcon.png" alt="Just-For-Music 标志" width="128">
+<img src="Resources/AppIcon.png" alt="VerseMotion 标志" width="128">
 
 支持 Apple Music 和网易云音乐的 macOS 状态栏工具，提供同步歌词、播放控制和桌面歌词浮窗。[下载 Apple Silicon 安装包](https://github.com/dadelen/Just-For-Music/releases/latest) · [更新记录](CHANGELOG.md)
 
@@ -69,7 +69,7 @@
 ```bash
 swift test
 ./scripts/package-app.sh
-open "dist/Just-For-Music.app"
+open "dist/VerseMotion.app"
 ```
 
 默认应用标识为 `io.github.dadelen.just-for-music`。
@@ -107,6 +107,6 @@ VERSION=1.0.5 BUILD_NUMBER=14 ./scripts/create-release-artifacts.sh
 
 ## 原项目署名与声明
 
-Just-For-Music 由 [dadelen](https://github.com/dadelen) 维护，基于 [Takpap/apple-music-lyrics](https://github.com/Takpap/apple-music-lyrics) 开发。感谢 Takpap 和原项目贡献者，仓库保留原始版权声明及 [MIT License](LICENSE)。
+VerseMotion 由 [dadelen](https://github.com/dadelen) 维护，基于 [Takpap/apple-music-lyrics](https://github.com/Takpap/apple-music-lyrics) 开发。感谢 Takpap 和原项目贡献者，仓库保留原始版权声明及 [MIT License](LICENSE)。
 
 本项目独立开发，与 Apple 无隶属、赞助或背书关系。Apple、Apple Music 和 macOS 是 Apple Inc. 的商标。歌词、专辑封面等内容的权利归各自权利人，本项目的 MIT 许可适用于软件代码。

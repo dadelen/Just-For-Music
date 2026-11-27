@@ -132,9 +132,10 @@ final class UpdateService: @unchecked Sendable {
         let appleSiliconImages = diskImages.filter {
             $0.name.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).contains("arm64")
         }
+        let legacyDiskImageNames = [AppIdentity.name, AppIdentity.executableName].map { "\($0)-\(version).dmg" }
         let dmg = appleSiliconImages.first { $0.name.lowercased().hasSuffix("-macos-arm64.dmg") }
             ?? (appleSiliconImages.count == 1 ? appleSiliconImages.first : nil)
-            ?? (diskImages.count == 1 ? diskImages.first { $0.name == "\(AppIdentity.name)-\(version).dmg" } : nil)
+            ?? (diskImages.count == 1 ? diskImages.first { legacyDiskImageNames.contains($0.name) } : nil)
         let checksum = release.assets.first {
             $0.name == "SHA256SUMS.txt" && Self.isTrustedReleaseURL($0.downloadURL)
         }

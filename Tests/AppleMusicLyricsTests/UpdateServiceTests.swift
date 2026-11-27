@@ -32,7 +32,13 @@ final class UpdateServiceTests: XCTestCase {
 
     func testAcceptsRenamedAppleSiliconDiskImages() throws {
         let service = UpdateService(currentVersion: "1.5.1")
-        for name in ["Just-For-Music-arm64.dmg", "Just-For-Music-1.6.0.dmg"] {
+        let names = [
+            "VerseMotion-1.6.0-macos-arm64.dmg",
+            "VerseMotion-1.6.0.dmg",
+            "Just-For-Music-arm64.dmg",
+            "Just-For-Music-1.6.0.dmg",
+        ]
+        for name in names {
             let data = releaseJSON(tag: "v1.6.0", diskImageName: name)
             XCTAssertEqual(try service.availableUpdate(from: data)?.assetName, name)
         }
